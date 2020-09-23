@@ -376,7 +376,7 @@ contains
  subroutine ermak_b(v,acel,f,ranv)                                                                                  
  real(dp),intent(inout)        :: v(n,3),acel(n,3)
  real(dp),intent(in)           :: f(n,3)                                                             
- real(dp),intent(out)          :: ranv(n,3)                                                                  
+ real(dp),intent(in)          :: ranv(n,3)                                                                  
  integer                       :: i                                                                                  
  ! calcula veloc                                                                           
  do i = 1,n
