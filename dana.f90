@@ -1,4 +1,4 @@
-program din-mol-Li
+program din_mol_Li
   
   implicit none
   
