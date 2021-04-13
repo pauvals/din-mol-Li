@@ -331,7 +331,8 @@ do i = 1,n
   if(r(i,3)<1._dp) then !No importa si < o <=
     if(g<prob) then
       call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
-      r(i,3)=1._dp
+      ! r(i,3)=1._dp
+      r(i,:)=[0.,0.,-1.e3] ! Chequeo Cottrell
       cycle !Cicla el do más cercano
     else !Acá rechazo el congelamiento y rebota
       r(i,3)=r(i,3)+2*(1._dp-r(i,3))
