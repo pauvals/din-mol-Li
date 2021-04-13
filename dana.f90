@@ -111,7 +111,7 @@ program din_mol_Li
   v(:,:)=(r(:,:)-rold(:,:))/h
 
   !Valores inic. de las ctes. de Ermak
-  call set_ermak(h,gama,Tsist) 
+  !call set_ermak(h,gama,Tsist) 
 
   call fuerza(r,f,eps,r0,energy)
   do i=1,n
@@ -131,10 +131,11 @@ program din_mol_Li
   do i=1,nst
 
     ! Da un paso #wii
-    call ermak_a(r,v,acel,ranv)
+    !call ermak_a(r,v,acel,ranv)
     call knock(r,rold)          !Ve si congela o no
     call fuerza(r,f,eps,r0,energy)
-    call ermak_b(v,acel,f,ranv)
+    !call ermak_b(v,acel,f,ranv)
+    call cbrownian(r,v,f,h,gama,Tsist)
     call set_rho(rho)
 
     !Salida 
@@ -278,6 +279,36 @@ contains
 
         end subroutine
 
+! Integracion browniana
+
+subroutine cbrownian(r,v,f,h,gama,Tsist)
+real(dp),intent(in)     :: f(n,3)                                                             
+real(dp),intent(inout)  :: r(n,3),v(n,3)
+real(dp),intent(in)     :: h,gama,Tsist !Acá irían dist. gama
+real(dp)                :: fac1,fac2,r1,posold
+integer    :: i,j
+
+fac1 = h/gama                      
+fac2 = sqrt(2._dp*kB_ui*temp*fac1)  
+
+do i = 1,n
+
+  do j = 1,3
+
+    r1=gasdev()
+   
+    posold = r(i,j)
+    r(i,j) = posold + fac1*f(i,j)/m(i) + r1*fac2/sqrt(m(i))
+
+    ! Velocidad derivada de euler para atras
+    v(i,j) = (r(i,j)-posold)/h
+  enddo
+    
+enddo
+
+end subroutine
+ 
+! Integracion langevin 
 
   subroutine set_ermak(h,gama,Tsist) !Constantes p/ Ermak
           !En libro: xi=kB*T/m*D=gama
@@ -300,7 +331,6 @@ contains
           skt=sqrt(kB_ui*Tsist)
 
   endsubroutine
-
 
   subroutine ermak_a(r,v,acel,ranv) !Actualiza posic.
 
@@ -389,7 +419,8 @@ contains
   enddo
 
  end subroutine
-                                                                                                          
+
+
  subroutine kion(v,temp)
           real(dp),intent(in)::v(n,3)
           real(dp),intent(out)::temp
