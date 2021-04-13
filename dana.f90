@@ -113,11 +113,12 @@ program din_mol_Li
   !Valores inic. de las ctes. de Ermak
   !call set_ermak(h,gama,Tsist) 
 
-  call fuerza(r,f,eps,r0,energy)
+  ! call fuerza(r,f,eps,r0,energy)
+  f(:,:)=0._dp
   do i=1,n
      acel(i,:)=f(i,:)/m(i)
   enddo
-
+  ! call cbrownian(r,v,f,h,gama,Tsist)
   
   ! Abro archivos de salida
   open(11,File='Li_1.xyz')
@@ -132,10 +133,10 @@ program din_mol_Li
 
     ! Da un paso #wii
     !call ermak_a(r,v,acel,ranv)
-    call knock(r,rold)          !Ve si congela o no
-    call fuerza(r,f,eps,r0,energy)
+    !call fuerza(r,f,eps,r0,energy)
     !call ermak_b(v,acel,f,ranv)
     call cbrownian(r,v,f,h,gama,Tsist)
+    call knock2(r,rold)          !Ve si congela o no
     call set_rho(rho)
 
     !Salida 
@@ -285,13 +286,19 @@ subroutine cbrownian(r,v,f,h,gama,Tsist)
 real(dp),intent(in)     :: f(n,3)                                                             
 real(dp),intent(inout)  :: r(n,3),v(n,3)
 real(dp),intent(in)     :: h,gama,Tsist !Acá irían dist. gama
-real(dp)                :: fac1,fac2,r1,posold
+real(dp)                :: fac1,fac2,r1,posold,g
 integer    :: i,j
 
 fac1 = h/gama                      
 fac2 = sqrt(2._dp*kB_ui*temp*fac1)  
 
 do i = 1,n
+
+  !Si ya está congelada, ni le calcula una nueva posic ;)
+  if (sym(i)=='CG') cycle  
+ 
+  !Para luego ver congelam. en knock2
+  rold(i,:)=r(i,:) 
 
   do j = 1,3
 
@@ -302,8 +309,36 @@ do i = 1,n
 
     ! Velocidad derivada de euler para atras
     v(i,j) = (r(i,j)-posold)/h
+
+    if(j<3) then
+      ! PBC en x e y
+      if (r(i,j)>rmax) r(i,j)=r(i,j)-box
+      if (r(i,j)<o) r(i,j)=r(i,j)+box
+    else  
+      !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
+      ! Rebote en zmax
+      if(r(i,j)>zmax) then
+        r(i,3)=r(i,3)-2*(r(i,3)-zmax)
+        v(i,3)=-v(i,3)   !También cambio el signo de la componente de la vel. ;)
+      endif
+    endif
+
   enddo
-    
+  
+  ! Si toca el electrodo implicito
+  ! se congela con probabilidad g
+  g=ran(idum)
+  if(r(i,3)<1._dp) then !No importa si < o <=
+    if(g<prob) then
+      call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
+      r(i,3)=1._dp
+      cycle !Cicla el do más cercano
+    else !Acá rechazo el congelamiento y rebota
+      r(i,3)=r(i,3)+2*(1._dp-r(i,3))
+      v(i,3)=-v(i,3)   !También cambio el signo de la componente de la vel. ;)
+    endif 
+  endif
+
 enddo
 
 end subroutine
@@ -516,11 +551,10 @@ end subroutine
   end subroutine fuerza
 
   subroutine knock(r,rold) !Congela o no
-
-          real(dp),intent(in)::rold(n,3)
-          real(dp),intent(inout)::r(n,3)
-          real(dp)::g,a(3),b(3),c,d,e,vd(3),dr
-          integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+    real(dp),intent(in)::rold(n,3)
+    real(dp),intent(inout)::r(n,3)
+    real(dp)::g,a(3),b(3),c,d,e,vd(3),dr
+    integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
           
     do i = 1, n-1
 
@@ -590,6 +624,68 @@ end subroutine
         
         endif
     
+      enddo
+
+    enddo
+
+  endsubroutine
+
+  subroutine knock2(r,rold) ! Rebote brusco
+    real(dp),intent(in)::rold(n,3)
+    real(dp),intent(inout)::r(n,3)
+    real(dp)::g,a(3),b(3),c,d,e,vd(3),dr
+    integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+      
+    ! Por todos los pares de particulas
+    do i = 1, n-1
+      k=tipo(i)
+      do j = i+1,n
+        m=tipo(j)
+
+        !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
+        if(k*m/=2) cycle
+
+        vd(:) = r(i,:)-r(j,:)
+
+        !Condicion de imagen minima
+        do l=1,2       !Sin contar en z ;)
+           if (vd(l)>box*.5_dp) then
+                 vd(l)=vd(l)-box
+           else if (vd(l)<-box*.5_dp) then
+                 vd(l)=vd(l)+box             
+           endif
+        enddo
+
+        dr = dot_product(vd,vd)
+
+        if(dr>r0(k,m)**2) cycle !Sí es necesario, pavota :B
+
+        ! Identifica los id del Li y del CG
+        if(m==1) then
+           lit=j
+           cng=i
+        else
+           lit=i
+           cng=j
+        endif
+
+        g=ran(idum) !nro aleatorio para decidir si congelar o no.
+        if(g<prob) then
+           call set_sym(lit,'CG') !Independientemente de si es 'i' o 'j' la que es Li, ya sabe que es la 'l'
+
+           ! Terminacion brusca del programa si la dendrita toco el z0
+           if (r(lit,3)>z0) stop  
+
+           cycle
+
+        else
+
+          ! Retorno la particula a la solución
+          ! Igual que Mayers
+          r(lit,:)=rold(lit,:)
+
+        endif
+
       enddo
 
     enddo
