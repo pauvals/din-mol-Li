@@ -33,8 +33,8 @@ program din_mol_Li
 
   ! Parametros de integración
   real(dp), parameter :: h=1.e-2_dp !paso de tiempo en ps
-  integer,  parameter :: nst=100000 !numero de pasos
-  integer,  parameter :: nwr=100    !paso de escritura
+  integer             :: nst        !numero de pasos
+  integer             :: nwr        !paso de escritura
   real(dp)            :: t=0.0_dp   !tiempo en ps
 
   !Observables
@@ -57,6 +57,8 @@ program din_mol_Li
   open(15,File='entrada.ini')
   read(15,*) idum 
   read(15,*) prob
+  read(15,*) nst
+  read(15,*) nwr
   close(15)
 
 
@@ -141,9 +143,7 @@ program din_mol_Li
 
     !Salida 
     if (mod(i,nwr)==0) then
-
       call salida()
-       
     endif
 
     call maxz(zmax)
@@ -161,124 +161,124 @@ program din_mol_Li
 
 contains
 
-        subroutine salida()  !Donde escribe los datos calc. :P
+  subroutine salida()  !Donde escribe los datos calc. :P
 
-                !real(dp),intent(inout)::sym(n),r(n,3),t//le aclaro el intent al arg. declarado para la sub-r
-                integer::j !Siempre hay que definirlos =O
-                
-                ! t, suma Epot+Ecin
-                write(12,*) t,sum(energy)
+    !real(dp),intent(inout)::sym(n),r(n,3),t//le aclaro el intent al arg. declarado para la sub-r
+    integer::j !Siempre hay que definirlos =O
+    
+    ! t, suma Epot+Ecin
+    write(12,*) t,sum(energy)
 
-                ! Coords. de partíc.
-                write(11,*) n
-                write(11,*) 
-                
-                do j =1,n
-                 write(11,*) sym(j),r(j,:)
-                enddo
+    ! Coords. de partíc.
+    write(11,*) n
+    write(11,*) 
+    
+    do j =1,n
+     write(11,*) sym(j),r(j,:)
+    enddo
 
-                call kion(v,temp) 
-                write(13,*)t,temp
-                
-                write(14,*)t,rho
-                flush(14)
-                flush(13)
-                flush(12)
+    call kion(v,temp) 
+    write(13,*)t,temp
+    
+    write(14,*)t,rho
+    flush(14)
+    flush(13)
+    flush(12)
 
-        endsubroutine
-
-
-        subroutine set_rho(rho) !Densidad/concentrac.
-
-                integer::i,g
-                real(dp)::vol,min_vol
-                real(dp),intent(out)::rho
-
-                g=0
-                min_vol=rmax**2*2.5_dp
-
-                do i=1,n !Esto debería contar las partícs. por encima de z0
-                if (r(i,3)>z0) then
-                        g=g+1
-                endif
-                enddo
-
-                vol=rmax**2*(zmax-z0) !zmax es lo que iré recalculando, pa la próx. iteración
-                
-                if (vol<min_vol) stop !Si el V del reservorio se hace pequeño, corta todo, sin escribir este último
-                                      !resultado.
-
-                rho= g/vol
+  endsubroutine
 
 
-        endsubroutine
+  subroutine set_rho(rho) !Densidad/concentrac.
 
-        subroutine maxz(zmax) !Ajusta caja con el mov. de partícs.
-                real(dp)::lohi !Like a valley/bird in the sky
-                real(dp),intent(inout)::zmax
-                integer::i
+    integer::i,g
+    real(dp)::vol,min_vol
+    real(dp),intent(out)::rho
 
-                lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las r(i,3) de las que estén sobre z0
-                
-                do i=1,n
-                   if (r(i,3)>z0) r(i,3)=r(i,3)-lohi*(r(i,3)-z0)
-                enddo
+    g=0
+    min_vol=rmax**2*2.5_dp
 
-                zmax=zmax-lohi*(zmax-z0)
+    do i=1,n !Esto debería contar las partícs. por encima de z0
+    if (r(i,3)>z0) then
+      g=g+1
+    endif
+    enddo
 
+    vol=rmax**2*(zmax-z0) !zmax es lo que iré recalculando, pa la próx. iteración
+    
+    if (vol<min_vol) stop !Si el V del reservorio se hace pequeño, corta todo, sin escribir este último
+              !resultado.
 
-        endsubroutine
-
-
-        function gasdev() !Nro aleat. 
-                real(dp)                  :: rsq,v1,v2
-                real(dp), save            :: g
-                real(dp)                  :: gasdev
-                logical, save             :: gaus_stored=.false.
-                if (gaus_stored) then
-                        gasdev=g
-                        gaus_stored=.false.
-                else
-                        do
-                          v1=2.0_dp*ran(idum)-1.0_dp
-                          v2=2.0_dp*ran(idum)-1.0_dp
-                          rsq=v1**2+v2**2
-                          if (rsq > 0._dp .and. rsq < 1._dp) exit
-                        end do
-                        rsq=sqrt(-2.0_dp*log(rsq)/rsq)
-                        gasdev=v1*rsq
-                        g=v2*rsq
-                        gaus_stored=.true.
-                end if
-  
-        end function gasdev
+    rho= g/vol
 
 
-        subroutine set_sym(i,z) !Asigna tipo a partíc.
-                integer,intent(in)            :: i
-                character(2),intent(in)       :: z
+  endsubroutine
 
-                if(i>n) then
-                  print *, '¡Error! partíc. no existe'
-                  stop
-                endif
+  subroutine maxz(zmax) !Ajusta caja con el mov. de partícs.
+    real(dp)::lohi !Like a valley/bird in the sky
+    real(dp),intent(inout)::zmax
+    integer::i
 
-                select case(z) !z=sym(i)
-                case('Li')
-                 sym(i)='Li' !Lee el i (intent(in)) y lo asigna
-                 tipo(i)=1
-                case('CG')
-                 sym(i)='CG'
-                 tipo(i)=2
-                case('F')
-                 sym(i)='F'
-                 tipo(i)=3
-                case default
+    lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las r(i,3) de las que estén sobre z0
+    
+    do i=1,n
+       if (r(i,3)>z0) r(i,3)=r(i,3)-lohi*(r(i,3)-z0)
+    enddo
 
-                end select
+    zmax=zmax-lohi*(zmax-z0)
 
 
-        end subroutine
+  endsubroutine
+
+
+function gasdev() !Nro aleat. 
+real(dp)                  :: rsq,v1,v2
+real(dp), save            :: g
+real(dp)                  :: gasdev
+logical, save             :: gaus_stored=.false.
+if (gaus_stored) then
+  gasdev=g
+  gaus_stored=.false.
+else
+  do
+    v1=2.0_dp*ran(idum)-1.0_dp
+    v2=2.0_dp*ran(idum)-1.0_dp
+    rsq=v1**2+v2**2
+    if (rsq > 0._dp .and. rsq < 1._dp) exit
+  end do
+  rsq=sqrt(-2.0_dp*log(rsq)/rsq)
+  gasdev=v1*rsq
+  g=v2*rsq
+  gaus_stored=.true.
+end if
+
+end function gasdev
+
+
+  subroutine set_sym(i,z) !Asigna tipo a partíc.
+    integer,intent(in)            :: i
+    character(2),intent(in)       :: z
+
+    if(i>n) then
+      print *, '¡Error! partíc. no existe'
+      stop
+    endif
+
+    select case(z) !z=sym(i)
+    case('Li')
+     sym(i)='Li' !Lee el i (intent(in)) y lo asigna
+     tipo(i)=1
+    case('CG')
+     sym(i)='CG'
+     tipo(i)=2
+    case('F')
+     sym(i)='F'
+     tipo(i)=3
+    case default
+
+    end select
+
+
+  end subroutine
 
 ! Integracion browniana
 
@@ -290,7 +290,7 @@ real(dp)                :: fac1,fac2,r1,posold,g
 integer    :: i,j
 
 fac1 = h/gama                      
-fac2 = sqrt(2._dp*kB_ui*temp*fac1)  
+fac2 = sqrt(2._dp*kB_ui*Tsist*fac1)  
 
 do i = 1,n
 
@@ -318,8 +318,8 @@ do i = 1,n
       !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
       ! Rebote en zmax
       if(r(i,j)>zmax) then
-        r(i,3)=r(i,3)-2*(r(i,3)-zmax)
-        v(i,3)=-v(i,3)   !También cambio el signo de la componente de la vel. ;)
+  r(i,3)=r(i,3)-2*(r(i,3)-zmax)
+  v(i,3)=-v(i,3)   !También cambio el signo de la componente de la vel. ;)
       endif
     endif
 
@@ -346,376 +346,374 @@ end subroutine
  
 ! Integracion langevin 
 
-  subroutine set_ermak(h,gama,Tsist) !Constantes p/ Ermak
-          !En libro: xi=kB*T/m*D=gama
-          real(dp),intent(in)::h,gama,Tsist !Acá irían dist. gama
+subroutine set_ermak(h,gama,Tsist) !Constantes p/ Ermak
+!En libro: xi=kB*T/m*D=gama
+real(dp),intent(in)::h,gama,Tsist !Acá irían dist. gama
 
-          !Calcula las ctes.
-          cc0=exp(-h*gama)
-          cc1=(1._dp-cc0)/gama
-          cc2=(1._dp-cc1/h)/gama
+!Calcula las ctes.
+cc0=exp(-h*gama)
+cc1=(1._dp-cc0)/gama
+cc2=(1._dp-cc1/h)/gama
 
-          !Desv. estándar
-          sdr=sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0+cc0*cc0)/(h*gama)))
-          sdv=sqrt(1._dp-cc0*cc0)
+!Desv. estándar
+sdr=sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0+cc0*cc0)/(h*gama)))
+sdv=sqrt(1._dp-cc0*cc0)
 
-          !Acá calcula el coef. de correlac. posic.-vel.
-          crv1=(1._dp-cc0)*(1._dp-cc0)/(gama*sdr*sdv)
-          crv2=sqrt(1._dp-(crv1*crv1))
+!Acá calcula el coef. de correlac. posic.-vel.
+crv1=(1._dp-cc0)*(1._dp-cc0)/(gama*sdr*sdv)
+crv2=sqrt(1._dp-(crv1*crv1))
 
-          !Un factor útil :P/para la rutina que sigue
-          skt=sqrt(kB_ui*Tsist)
+!Un factor útil :P/para la rutina que sigue
+skt=sqrt(kB_ui*Tsist)
 
-  endsubroutine
+endsubroutine
 
-  subroutine ermak_a(r,v,acel,ranv) !Actualiza posic.
+subroutine ermak_a(r,v,acel,ranv) !Actualiza posic.
 
- ! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263.
- real(dp),intent(inout)        :: r(n,3),v(n,3)
- real(dp),intent(in)           :: acel(n,3)                                                              
- real(dp),intent(out)          :: ranv(n,3)                                                               
- real(dp)                      :: r1 ,r2, ranr,g                                                               
- integer                       :: i,j                                                                   
-                                                                                                                  
- do i = 1,n
+! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263.
+real(dp),intent(inout)        :: r(n,3),v(n,3)
+real(dp),intent(in)           :: acel(n,3)                                                              
+real(dp),intent(out)          :: ranv(n,3)                                                               
+real(dp)                      :: r1 ,r2, ranr,g                                                               
+integer                       :: i,j                                                                   
+                                                                                         
+do i = 1,n
 
-   if (sym(i)=='CG') cycle  !Si ya está congelada, ni le calcula una nueva posic ;)
-   rold(i,:)=r(i,:) !Para luego ver congelam.
-                                                                                                                
-   do j = 1, 3
-     r1=gasdev()
-     ranr = skt/sqrt(m(i))*sdr*r1 
-     r(i,j) = r(i,j) + cc1*v(i,j) + cc2*h*acel(i,j) + ranr
+  if (sym(i)=='CG') cycle  !Si ya está congelada, ni le calcula una nueva posic ;)
+  rold(i,:)=r(i,:) !Para luego ver congelam.
+                                                                                       
+  do j = 1, 3
+    r1=gasdev()
+    ranr = skt/sqrt(m(i))*sdr*r1 
+    r(i,j) = r(i,j) + cc1*v(i,j) + cc2*h*acel(i,j) + ranr
 
-     !P/ que Li pueda congelarse, o que siga al rebote
-     if (sym(i)/='CG')then  
-          if(r(i,3)<1._dp) then !No importa si < o <=
-                  
-                  g=ran(idum)
-                  
-                  if(g<prob) then
-                          if(sym(i)=='Li') then
-                                  call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
-                                  r(i,3)=1._dp
-                                  cycle !Cicla el do más cercano
-                          endif
+    !P/ que Li pueda congelarse, o que siga al rebote
+    if (sym(i)/='CG')then  
+   if(r(i,3)<1._dp) then !No importa si < o <=
+     
+     g=ran(idum)
+     
+     if(g<prob) then
+ if(sym(i)=='Li') then
+         call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
+         r(i,3)=1._dp
+         cycle !Cicla el do más cercano
+ endif
 
-                  else !Acá rechazo el congelamiento y rebota
-                         
-                          r(i,3)=r(i,3)+2*(1._dp-r(i,3))
-                          v(i,3)=-v(i,3)
-
-                  endif
-          endif
-     endif
-
-     ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                       
-     r2=gasdev()
-     ranv(i,j) = skt/sqrt(m(i))*sdv*(crv1*r1+crv2*r2)
-
-     !Pongo condiciones de caja
-     if(j<3) then
-             if (r(i,j)>rmax) r(i,j)=r(i,j)-box
-             if (r(i,j)<o) r(i,j)=r(i,j)+box
-     else  !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
-
-             if(r(i,j)>zmax) then
-                     r(i,3)=r(i,3)-2*(r(i,3)-zmax)
-                     v(i,3)=-v(i,3)   !También cambio el signo de la componente de la vel. ;)
-             endif
-
-             if(r(i,j)<1._dp) then
-                     r(i,3)=r(i,3)+2*(1._dp-r(i,3))
-                     v(i,3)=-v(i,3)
-             endif
+     else !Acá rechazo el congelamiento y rebota
+      
+ r(i,3)=r(i,3)+2*(1._dp-r(i,3))
+ v(i,3)=-v(i,3)
 
      endif
+   endif
+    endif
 
-   enddo
+    ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                       
+    r2=gasdev()
+    ranv(i,j) = skt/sqrt(m(i))*sdv*(crv1*r1+crv2*r2)
 
+    !Pongo condiciones de caja
+    if(j<3) then
+      if (r(i,j)>rmax) r(i,j)=r(i,j)-box
+      if (r(i,j)<o) r(i,j)=r(i,j)+box
+    else  !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
 
+      if(r(i,j)>zmax) then
+  r(i,3)=r(i,3)-2*(r(i,3)-zmax)
+  v(i,3)=-v(i,3)   !También cambio el signo de la componente de la vel. ;)
+      endif
 
- enddo
-                                                                                                                      
- end subroutine    
-                                                                                                                      
- subroutine ermak_b(v,acel,f,ranv)                                                                                  
- real(dp),intent(inout)        :: v(n,3),acel(n,3)
- real(dp),intent(in)           :: f(n,3)                                                             
- real(dp),intent(in)          :: ranv(n,3)                                                                  
- integer                       :: i                                                                                  
- ! calcula veloc                                                                           
- do i = 1,n
-   
-   if(sym(i)=='CG') cycle !Así se ahorra un cálculo
+      if(r(i,j)<1._dp) then
+  r(i,3)=r(i,3)+2*(1._dp-r(i,3))
+  v(i,3)=-v(i,3)
+      endif
 
-   v(i,:) = cc0*v(i,:) + (cc1-cc2)*acel(i,:) + cc2*f(i,:)/m(i) + ranv(i,:)
-   acel(i,:)=f(i,:)/m(i)
+    endif
 
   enddo
 
- end subroutine
 
 
- subroutine kion(v,temp)
-          real(dp),intent(in)::v(n,3)
-          real(dp),intent(out)::temp
-          real(dp)::vd,vdn,vdac,otrak !módulo de la vel., y donde acumulo
-          integer::i,j
+enddo
+                                                                                             
+end subroutine    
+                                                                                             
+subroutine ermak_b(v,acel,f,ranv)                                                                                  
+real(dp),intent(inout)        :: v(n,3),acel(n,3)
+real(dp),intent(in)           :: f(n,3)                                                             
+real(dp),intent(in)          :: ranv(n,3)                                                                  
+integer                       :: i                                                                                  
 
-          vdac=0. !acá inicio la cuenta (?)
-          j=0
+! calcula veloc                                                                           
+do i = 1,n
+  
+  if(sym(i)=='CG') cycle !Así se ahorra un cálculo
 
-          do i=1,n
-        
-          if(sym(i)=='CG') cycle !No considera Li metálico
-          j=j+1 !Cuenta los iones en mov.
+  v(i,:) = cc0*v(i,:) + (cc1-cc2)*acel(i,:) + cc2*f(i,:)/m(i) + ranv(i,:)
+  acel(i,:)=f(i,:)/m(i)
 
-          vd=dot_product(v(i,:),v(i,:))
-          vd=vd*m(i) !vel. al cuadrado ;) *porq. |v|=sqrt vd...
+enddo
 
-
-          vdn=vdac+vd !acumula m*vel**2
-          vdac=vdn !acá como que guardo en vdac el valor de vdn para la próx.
-
-          !vdac=vdac+vd !empiezo a acumular m*vel**2
-          enddo
-          
-          temp=vdac/(j*3._dp*kB_ui)
-
-  endsubroutine
+end subroutine
 
 
-  subroutine fuerza(r,f,eps,r0,energy)
-    real(dp)            :: vd(3),dr,aux,a,b,g,rcg(3)
-    real(dp),intent(in) :: r(n,3),eps(3,3),r0(3,3)
-    real(dp),intent(out):: energy(n),f(n,3)
-    integer         :: i,j,l,k,m
+subroutine kion(v,temp)
+  real(dp),intent(in)::v(n,3)
+  real(dp),intent(out)::temp
+  real(dp)::vd,vdn,vdac,otrak !módulo de la vel., y donde acumulo
+  integer::i,j
 
-    f(:,:) = 0._dp
-    energy(:) = 0._dp
+  vdac=0. !acá inicio la cuenta (?)
+  j=0
 
-    do i = 1, n-1
-
-      k=tipo(i)
-
-      do j = i+1,n
-
-        m=tipo(j)   !Determina esto para luego poder elegir los valores de eps y r0
-
-        vd(:) = r(i,:)-r(j,:) 
-
-         !Armar la caja 
-         do l=1,2       !Sin contar en z ;)
-            if (vd(l)>box*.5_dp) then
-                  vd(l)=vd(l)-box
-            else if (vd(l)<-box*.5_dp) then
-                  vd(l)=vd(l)+box             
-            endif
-          
-         ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
-
-         enddo
-
-        if(sym(j)=='CG'.and.sym(i)=='CG') cycle
-
-        dr = dot_product(vd,vd)
-
-        if(dr>r0(k,m)**2) cycle
-
-        dr=sqrt(dr)
-
-        !factores para f
-        b=r0(k,m)**6
-        a=eps(k,m)*12._dp*b  
-        a=a/(dr**7)
-        b=b/(dr**6)
-
-        !derivado el pot de LJ
-        aux=a*(b-1)     
-
-        f(i,:)=f(i,:)+aux*vd(:)/dr
-        f(j,:)=f(j,:)-aux*vd(:)/dr
+  do i=1,n
  
-        aux = eps(k,m)*b*(b-2)
+  if(sym(i)=='CG') cycle !No considera Li metálico
+  j=j+1 !Cuenta los iones en mov.
 
-        !el pot de LJ+epsilon
-        aux=aux+eps(k,m)   
+  vd=dot_product(v(i,:),v(i,:))
+  vd=vd*m(i) !vel. al cuadrado ;) *porq. |v|=sqrt vd...
 
-        energy(i) = energy(i) + aux*.5_dp
-        energy(j) = energy(j) + aux*.5_dp 
 
+  vdn=vdac+vd !acumula m*vel**2
+  vdac=vdn !acá como que guardo en vdac el valor de vdn para la próx.
+
+  !vdac=vdac+vd !empiezo a acumular m*vel**2
+  enddo
   
-      enddo
-    enddo
+  temp=vdac/(j*3._dp*kB_ui)
 
-  end subroutine fuerza
-
-  subroutine knock(r,rold) !Congela o no
-    real(dp),intent(in)::rold(n,3)
-    real(dp),intent(inout)::r(n,3)
-    real(dp)::g,a(3),b(3),c,d,e,vd(3),dr
-    integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
-          
-    do i = 1, n-1
-
-      k=tipo(i)
-
-      do j = i+1,n
-
-        m=tipo(j)
-
-        vd(:) = r(i,:)-r(j,:)
+endsubroutine
 
 
-         !Pruebo armar la caja 
-         do l=1,2       !Sin contar en z ;)
-            if (vd(l)>box*.5_dp) then
-                  vd(l)=vd(l)-box
-            else if (vd(l)<-box*.5_dp) then
-                  vd(l)=vd(l)+box             
-            endif
-          
-         ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
+subroutine fuerza(r,f,eps,r0,energy)
+real(dp)            :: vd(3),dr,aux,a,b,g,rcg(3)
+real(dp),intent(in) :: r(n,3),eps(3,3),r0(3,3)
+real(dp),intent(out):: energy(n),f(n,3)
+integer         :: i,j,l,k,m
 
-         enddo
+f(:,:) = 0._dp
+energy(:) = 0._dp
 
+do i = 1, n-1
 
-        dr = dot_product(vd,vd)
-        if(dr>r0(k,m)**2) cycle !Sí es necesario, pavota :B
+  k=tipo(i)
 
-
-        if(k*m==2) then !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
-
-                ! Identifica los id del Li y del CG
-                if(m==1) then
-                   lit=j
-                   cng=i
-                else
-                   lit=i
-                   cng=j
-                endif
-
-                vd(:)=rold(lit,:)-r(cng,:)  !Si la posic. vieja del Li comparada con la del CG es gde., pasa a decidir si congela.
-
-                 !Pruebo armar la caja 
-                 do l=1,2       !Sin contar en z ;)
-                    if (vd(l)>box*.5_dp) then
-                          vd(l)=vd(l)-box
-                    else if (vd(l)<-box*.5_dp) then
-                          vd(l)=vd(l)+box             
-                    endif
-                  
-                 ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
-
-                 enddo
-
-
-                dr = dot_product(vd,vd)
-
-                if(dr>r0(k,m)**2) then
-                        g=ran(idum) !nro aleatorio para decidir si congelar o no.
-                        
-                        if(g<prob) then
-                                call set_sym(lit,'CG') !Independientemente de si es 'i' o 'j' la que es Li, ya sabe que es la 'l'
-                                if (r(lit,3)>z0) stop  !Dentro de la subr. sigue siendo lit ;)
-                                cycle
-                        endif
-                endif
-        
-        endif
+  do j = i+1,n
     
-      enddo
-
+    m=tipo(j)   !Determina esto para luego poder elegir los valores de eps y r0
+    
+    vd(:) = r(i,:)-r(j,:) 
+    
+    !Armar la caja 
+    do l=1,2       !Sin contar en z ;)
+      if (vd(l)>box*.5_dp) then
+        vd(l)=vd(l)-box
+      else if (vd(l)<-box*.5_dp) then
+        vd(l)=vd(l)+box             
+      endif
+       
+      ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
     enddo
 
-  endsubroutine
+    if(sym(j)=='CG'.and.sym(i)=='CG') cycle
 
-  subroutine knock2(r,rold) ! Rebote brusco
-    real(dp),intent(in)::rold(n,3)
-    real(dp),intent(inout)::r(n,3)
-    real(dp)::g,a(3),b(3),c,d,e,vd(3),dr
-    integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
-      
-    ! Por todos los pares de particulas
-    do i = 1, n-1
-      k=tipo(i)
-      do j = i+1,n
-        m=tipo(j)
+    dr = dot_product(vd,vd)
 
-        !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
-        if(k*m/=2) cycle
+    if(dr>r0(k,m)**2) cycle
 
-        vd(:) = r(i,:)-r(j,:)
+    dr=sqrt(dr)
 
-        !Condicion de imagen minima
-        do l=1,2       !Sin contar en z ;)
-           if (vd(l)>box*.5_dp) then
-                 vd(l)=vd(l)-box
-           else if (vd(l)<-box*.5_dp) then
-                 vd(l)=vd(l)+box             
-           endif
-        enddo
+    !factores para f
+    b=r0(k,m)**6
+    a=eps(k,m)*12._dp*b  
+    a=a/(dr**7)
+    b=b/(dr**6)
 
-        dr = dot_product(vd,vd)
+    !derivado el pot de LJ
+    aux=a*(b-1)     
 
-        if(dr>r0(k,m)**2) cycle !Sí es necesario, pavota :B
+    f(i,:)=f(i,:)+aux*vd(:)/dr
+    f(j,:)=f(j,:)-aux*vd(:)/dr
 
-        ! Identifica los id del Li y del CG
-        if(m==1) then
-           lit=j
-           cng=i
-        else
-           lit=i
-           cng=j
+    aux = eps(k,m)*b*(b-2)
+
+    !el pot de LJ+epsilon
+    aux=aux+eps(k,m)   
+
+    energy(i) = energy(i) + aux*.5_dp
+    energy(j) = energy(j) + aux*.5_dp 
+
+  enddo
+enddo
+
+end subroutine fuerza
+
+subroutine knock(r,rold) !Congela o no
+real(dp),intent(in)::rold(n,3)
+real(dp),intent(inout)::r(n,3)
+real(dp)::g,a(3),b(3),c,d,e,vd(3),dr
+integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+
+do i = 1, n-1
+
+  k=tipo(i)
+
+  do j = i+1,n
+
+    m=tipo(j)
+
+    vd(:) = r(i,:)-r(j,:)
+
+
+     !Pruebo armar la caja 
+     do l=1,2       !Sin contar en z ;)
+       if (vd(l)>box*.5_dp) then
+       vd(l)=vd(l)-box
+       else if (vd(l)<-box*.5_dp) then
+       vd(l)=vd(l)+box             
+       endif
+     
+     ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
+
+     enddo
+
+
+    dr = dot_product(vd,vd)
+    if(dr>r0(k,m)**2) cycle !Sí es necesario, pavota :B
+
+
+    if(k*m==2) then !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
+
+      ! Identifica los id del Li y del CG
+      if(m==1) then
+         lit=j
+         cng=i
+      else
+         lit=i
+         cng=j
+      endif
+
+      vd(:)=rold(lit,:)-r(cng,:)  !Si la posic. vieja del Li comparada con la del CG es gde., pasa a decidir si congela.
+
+      !Pruebo armar la caja 
+      do l=1,2       !Sin contar en z ;)
+        if (vd(l)>box*.5_dp) then
+          vd(l)=vd(l)-box
+        else if (vd(l)<-box*.5_dp) then
+          vd(l)=vd(l)+box             
         endif
+       
+      ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
+      enddo
 
+
+      dr = dot_product(vd,vd)
+
+      if(dr>r0(k,m)**2) then
         g=ran(idum) !nro aleatorio para decidir si congelar o no.
+        
         if(g<prob) then
-           call set_sym(lit,'CG') !Independientemente de si es 'i' o 'j' la que es Li, ya sabe que es la 'l'
-
-           ! Terminacion brusca del programa si la dendrita toco el z0
-           if (r(lit,3)>z0) stop  
-
-           cycle
-
-        else
-
-          ! Retorno la particula a la solución
-          ! Igual que Mayers
-          r(lit,:)=rold(lit,:)
-
+          call set_sym(lit,'CG') !Independientemente de si es 'i' o 'j' la que es Li, ya sabe que es la 'l'
+          if (r(lit,3)>z0) stop  !Dentro de la subr. sigue siendo lit ;)
+          cycle
         endif
+      endif
+    
+    endif
 
-      enddo
+  enddo
 
+enddo
+
+endsubroutine
+
+subroutine knock2(r,rold) ! Rebote brusco
+real(dp),intent(in)::rold(n,3)
+real(dp),intent(inout)::r(n,3)
+real(dp)::g,a(3),b(3),c,d,e,vd(3),dr
+integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+  
+! Por todos los pares de particulas
+do i = 1, n-1
+  k=tipo(i)
+  do j = i+1,n
+    m=tipo(j)
+
+    !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
+    if(k*m/=2) cycle
+
+    vd(:) = r(i,:)-r(j,:)
+
+    !Condicion de imagen minima
+    do l=1,2       !Sin contar en z ;)
+       if (vd(l)>box*.5_dp) then
+         vd(l)=vd(l)-box
+       else if (vd(l)<-box*.5_dp) then
+         vd(l)=vd(l)+box             
+       endif
     enddo
 
-  endsubroutine
+    dr = dot_product(vd,vd)
+
+    if(dr>r0(k,m)**2) cycle !Sí es necesario, pavota :B
+
+    ! Identifica los id del Li y del CG
+    if(m==1) then
+       lit=j
+       cng=i
+    else
+       lit=i
+       cng=j
+    endif
+
+    g=ran(idum) !nro aleatorio para decidir si congelar o no.
+    if(g<prob) then
+       call set_sym(lit,'CG') !Independientemente de si es 'i' o 'j' la que es Li, ya sabe que es la 'l'
+
+       ! Terminacion brusca del programa si la dendrita toco el z0
+       if (r(lit,3)>z0) stop  
+
+       cycle
+
+    else
+
+      ! Retorno la particula a la solución
+      ! Igual que Mayers
+      r(lit,:)=rold(lit,:)
+
+    endif
+
+  enddo
+
+enddo
+
+endsubroutine
 
   
-  function ran(idum)
-  implicit none
-  integer, intent(inout) :: idum
-  integer, parameter     :: k4b=selected_int_kind(9)
-  real                   :: ran
-  integer, parameter     :: ia=16807,im=2147483647,iq=127773,ir=2836
-  real, save             :: am
-  integer(k4b), save     :: ix=-1,iy=-1,k
-  if (idum <= 0 .or. iy < 0) then
-    am=nearest(1.0,-1.0)/im
-    iy=ior(ieor(888889999,abs(idum)),1)
-    ix=ieor(777755555,abs(idum))
-    idum=abs(idum)+1
-  end if
-  ix=ieor(ix,ishft(ix,13))
-  ix=ieor(ix,ishft(ix,-17))
-  ix=ieor(ix,ishft(ix,5))
-  k=iy/iq
-  iy=ia*(iy-k*iq)-ir*k
-  if (iy < 0) iy=iy+im
-  ran=am*ior(iand(im,ieor(ix,iy)),1)
-  end function ran  
+function ran(idum)
+implicit none
+integer, intent(inout) :: idum
+integer, parameter     :: k4b=selected_int_kind(9)
+real                   :: ran
+integer, parameter     :: ia=16807,im=2147483647,iq=127773,ir=2836
+real, save             :: am
+integer(k4b), save     :: ix=-1,iy=-1,k
+if (idum <= 0 .or. iy < 0) then
+  am=nearest(1.0,-1.0)/im
+  iy=ior(ieor(888889999,abs(idum)),1)
+  ix=ieor(777755555,abs(idum))
+  idum=abs(idum)+1
+end if
+ix=ieor(ix,ishft(ix,13))
+ix=ieor(ix,ishft(ix,-17))
+ix=ieor(ix,ishft(ix,5))
+k=iy/iq
+iy=ia*(iy-k*iq)-ir*k
+if (iy < 0) iy=iy+im
+ran=am*ior(iand(im,ieor(ix,iy)),1)
+end function ran  
 
 end program
 
