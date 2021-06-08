@@ -120,10 +120,10 @@ program din_mol_Li
 
   
   ! Abro archivos de salida
-  open(11,File='Li_1.xyz')
-  open(12,File='E_Li1.dat')
-  open(13,File='T_Li1.dat')
-  open(14,File='rho_Li1.dat')
+  open(11,File='Li.xyz')
+  open(12,File='E.dat')
+  open(13,File='T.dat')
+  open(14,File='rho.dat')
 
   call salida() !Para que escriba la config. inic. en el primer paso ;)
 
