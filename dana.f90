@@ -75,7 +75,7 @@ program din_mol_Li
 
   ! Nro. partículas (quizás tb. en entrada poner ¿?)
   n = 2000
-  allocate(a(n),xa(n))
+  allocate(a(n))
   ! allocate(xsym(n), xm(n), xtipo(n), xr(n,3), xrold(n,3), xrnew(n,3), xv(n,3), xf(n,3), xenergy(n), xacel(n,3)) 
 
   ! Leer configuración inicial
@@ -165,7 +165,7 @@ program din_mol_Li
     endif
 
     ! Ajuste de tamaño y cant. de partículas en reservorio
-    call mv_reserva(a)
+    call mv_reserva(a,xa)
     call maxz(zmax)
 
     t=t+h
@@ -180,9 +180,9 @@ program din_mol_Li
 
 contains
 
-  subroutine mv_reserva(a) !Muevo reservorio
+  subroutine mv_reserva(a,xa) !Muevo reservorio
     integer::j 
-    type(atom),intent(inout), allocatable        :: a(:)
+    type(atom),intent(inout), allocatable        :: a(:),xa(:)
 
     ! Seleccionar CG de mayor z
     z1= 0.0_dp
