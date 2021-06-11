@@ -7,14 +7,10 @@ program din_mol_Li
   !Cosas del sistema  #what a quilombo
   integer               :: n               !Nro de particulas
   real(dp), parameter   :: rmax=100._dp, o=0._dp, box=rmax-o, tau=0.1_dp !Largo de la caja, tau p/ rho
-  real(dp)              :: z0, zmax ! Base y techo del reservorio
-  real(dp), parameter   :: gama=1._dp ! Relac. a fricción
-  real(dp), parameter   :: Tsist=300._dp !Temp. del sist., 300 K
-  real(dp)              :: eps(3,3),r0(3,3) !eps y r0 definidas como matrices para c/ tipo
-  ! character(2), allocatable        :: a(:)%sym!, xsym(:)
-  ! character(2)        :: z
-  ! integer, allocatable ::a(:)%tipo!, xtipo(:)  !Tipo de partíc., asignado a c/una
-  ! real(dp), allocatable ::a(:)%m!, xm(:) !gama(n)  !masa y el gamma(a implementar)
+  real(dp)              :: z0, zmax             ! Base y techo del reservorio
+  real(dp), parameter   :: gama=1._dp           ! Para fricción
+  real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
+  real(dp)              :: eps(3,3),r0(3,3)     ! eps y r0 definidas como matrices para c/ tipo
 
   ! Constantes Físicas y
   ! factores de conversión de unidades
@@ -30,28 +26,17 @@ program din_mol_Li
           character(2) :: sym
           integer :: tipo
   endtype
-  type(atom), allocatable :: a(:), xa(:) ! átomo y el auxiliar
+  type(atom), allocatable :: a(:) !,xa(:) ! átomo y el auxiliar
   real(dp)            :: prob
 
-  !real(dp),allocatable :: a(:)%r(:), a(:)%rold(:), a(:)%rnew(:), a(:)%v(:), a(:)%f(:)
-  ! real(dp),allocatable :: xr(:,:), xrold(:,:), xrnew(:,:), xv(:,:), xf(:,:)
-  ! real(dp)            :: a(n)%r(3)       ! Posiciones 
-  ! real(dp)            :: a(n)%rold(3)    ! Posiciones anteriores
-  ! real(dp)            :: a(n)%rnew(3)    ! Posiciones nuevas
-  ! real(dp)            :: a(n)%v(3)       ! veloc.
-  ! real(dp)            :: a(n)%f(3)       ! Fuerza
-
   ! Parametros de integración
-  real(dp), parameter :: h=1.e-2_dp !paso de tiempo en ps
-  integer             :: nst        !numero de pasos
-  integer             :: nwr        !paso de escritura
-  real(dp)            :: t=0.0_dp   !tiempo en ps
+  real(dp), parameter :: h=1.e-2_dp ! paso de tiempo
+  integer             :: nst        ! nro de pasos
+  integer             :: nwr        ! paso de escritura
+  real(dp)            :: t=0.0_dp   ! tiempo en ps
 
   !Observables
   real(dp)            :: temp,rho,rho0
-  !real(dp), allocatable :: a(:)%energy!, xenergy(:)
-  !real(dp)            :: a(n)%energy
-  !real(dp)            :: ecin,epot
 
   ! Varios
   integer             :: idum         ! Semilla
@@ -76,7 +61,6 @@ program din_mol_Li
   ! Nro. partículas (quizás tb. en entrada poner ¿?)
   n = 2000
   allocate(a(n))
-  ! allocate(xsym(n), xm(n), xtipo(n), xr(n,3), xrold(n,3), xrnew(n,3), xv(n,3), xf(n,3), xenergy(n), xacel(n,3)) 
 
   ! Leer configuración inicial
   open(11,File='posic_inic.xyz')
@@ -93,8 +77,6 @@ program din_mol_Li
 
 
   ! Valores iniciales
-  ! a(:)%f(:)=0._dp
-  ! a(:)%rold(:)=a(:)%r(:)
   z0=100._dp
   zmax=400._dp 
   ! Calcula rho-densidad reservorio inicial
@@ -135,9 +117,10 @@ program din_mol_Li
   ! Valores inic. de las ctes. de Ermak
   ! call set_ermak(h,gama,Tsist) 
 
+  ! calculo vel. y acelerac. iniciales
   do i=1,n
-     a(i)%acel(:)=a(i)%f(:)/a(i)%m
      a(i)%v(:)=(a(i)%r(:)-a(i)%rold(:))/h
+     a(i)%acel(:)=a(i)%f(:)/a(i)%m
  enddo
   
   ! Abro archivos de salida
@@ -157,16 +140,16 @@ program din_mol_Li
     ! call ermak_b(a,ranv)
     call cbrownian(a,h,gama,Tsist)
     call knock2(a)          !Ve si congela o no
-    call set_rho(rho)
 
-    !Salida
+    ! Ajuste de tamaño, y cant. de partículas en reservorio
+    call set_rho(rho)
+    call maxz(zmax)
+    call mv_reserva(a)
+
+    ! Salida
     if (mod(i,nwr)==0) then
       call salida()
     endif
-
-    ! Ajuste de tamaño y cant. de partículas en reservorio
-    call mv_reserva(a,xa)
-    call maxz(zmax)
 
     t=t+h
     
@@ -180,11 +163,13 @@ program din_mol_Li
 
 contains
 
-  subroutine mv_reserva(a,xa) !Muevo reservorio
-    integer::j 
-    type(atom),intent(inout), allocatable        :: a(:),xa(:)
+  subroutine mv_reserva(a) ! Muevo reservorio y agrego partículas
+    integer::j,l,k         ! pierde acceso a la k global 
+    type(atom),intent(inout), allocatable        :: a(:)
+    type(atom), allocatable        :: xa(:)
 
-    ! Seleccionar CG de mayor z
+    ! Seleccionar CG de mayor z, para comparar posic. de reservorio
+    ! (Distancia dendrita-reservorio igual a 100 A)
     z1= 0.0_dp
     do j=1,n
       if (a(j)%sym=='CG') then
@@ -196,57 +181,37 @@ contains
     dist= 100._dp - (z0 - z1) 
     ! print *, 'dist= 100-(z0 - z1)= ', dist
 
-    !Dist r(3) a z0, comparo parametro dist
     if (dist > 5._dp) then
        z0= z0 + dist
        ! print *, 'z0= ', z0
        zmax= zmax + dist
        ! print *, 'zmax= ', zmax
 
-       ! Cuantas particulas z0<r(3)<delta+z0---->k
+       ! Cuento partículas en volumen a modificar
        k = 0
        do j=1,n
-         if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then !bueno, desastroso. puesto así por cómo cambié z0 
+         if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then 
              k = k + 1
          endif
        enddo
        ! print *, 'k=', k
 
-       ! allocate que sea según si dist > 0 o no, por eso ta dentro del if lo que sigue
        ! Hacer deallocate hace que pierda la info ya guardada en las variables... : haremos move alloc
        if (size(a) < n+k) then
          allocate (xa(n+5*k))
-         xa(1:n)= a(1:n) ! copiado de los datos
+         xa(1:n)= a(1:n)        ! copiado de los datos
          call move_alloc(from= xa, to= a)
        endif
 
-       ! Particulas z0<a(j)%r(3)<delta+z0  a(n+1)%r(3)=a(j)%r(3)+z0
-       ! y con todas las otras variables :)
+       ! Nuevas partícs. reciben props. de otras ya existentes 
+       l = 0
        do j=1,n
-         if (a(n)%r(3) > z0 .and. a(n)%r(3) < z0 + dist) then  !bueno, desastroso
-                 ! mmm. pero ya re-asigné algunos valores. aaaa, no, estas son las parts. de más arriba :B
-              a(n+k)%r(1)=a(n)%r(1) !revisar coordenadas
-              a(n+k)%r(2)=a(n)%r(2) 
-              a(n+k)%r(3)=a(n)%r(3)+z0 
-              a(n+k)%rold(1)=a(n)%rold(1)
-              a(n+k)%rold(2)=a(n)%rold(2)
-              a(n+k)%rold(3)=a(n)%rold(3)+z0
-              a(n+k)%rnew(1)=a(n)%rnew(1)
-              a(n+k)%rnew(2)=a(n)%rnew(2)
-              a(n+k)%rnew(3)=a(n)%rnew(3)+z0
-              a(n+k)%v(1)=a(n)%v(1)
-              a(n+k)%v(2)=a(n)%v(2)
-              a(n+k)%v(3)=a(n)%v(3) ! revisar v, acel y f
-              a(n+k)%acel(1)=a(n)%acel(1)
-              a(n+k)%acel(2)=a(n)%acel(2)
-              a(n+k)%acel(3)=a(n)%acel(3)
-              a(n+k)%f(1)=a(n)%f(1)
-              a(n+k)%f(2)=a(n)%f(2)
-              a(n+k)%f(3)=a(n)%f(3)
-              a(n+k)%m=a(n)%m
-              a(n+k)%sym=a(n)%sym
-              a(n+k)%tipo=a(n)%tipo
-              a(n+k)%energy=a(n)%energy
+         if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then  ! desastroso
+                 l = l + 1      ! va a ir sumando hta k
+                 a(n+l)= a(j)
+                 a(n+l)%r(3)=a(j)%r(3)+z0       ! "subo" posic. en z
+                 a(n+l)%rold(3)=a(j)%rold(3)+z0
+                 a(n+l)%rnew(3)=a(j)%rnew(3)+z0
          endif
        enddo
 
@@ -256,7 +221,7 @@ contains
   endsubroutine
 
   subroutine salida()  !Donde escribe los datos calc. :P
-    integer::j !Siempre hay que definirlos =O
+    integer::j !Siempre hay que definirlos =O siempre privados
     
     ! t, suma Epot+Ecin
     write(12,*) t,sum(a(:)%energy)
@@ -266,7 +231,7 @@ contains
     write(11,*) 
     
     do j =1,n
-     write(11,*) a(j)%sym,a(j)%r(:)
+     write(11,*) a(j)%sym,a(j)%r(:),a(j)%tipo
     enddo
 
     call kion(a,temp) 
