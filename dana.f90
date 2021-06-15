@@ -59,13 +59,14 @@ program din_mol_Li
   close(15)
 
   ! Nro. partículas (quizás tb. en entrada poner ¿?)
-  n = 2000
-  allocate(a(n))
+  ! n = 2000
 
   ! Leer configuración inicial
   open(11,File='posic_inic.xyz')
+  read(11,*) n
   read(11,*)
-  read(11,*)
+  allocate(a(n))
+
   do i=1,n
     read(11,*) a(i)%sym,a(i)%r(:),a(i)%m
     call set_sym(i,a(i)%sym)  ! Asigna algunos valores según tipo de átomo 
@@ -78,7 +79,7 @@ program din_mol_Li
 
   ! Valores iniciales
   z0=100._dp
-  zmax=400._dp 
+  zmax=200._dp 
   ! Calcula rho-densidad reservorio inicial
   call set_rho(rho) 
   rho0=rho
@@ -209,9 +210,9 @@ contains
          if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then  ! desastroso
                  l = l + 1      ! va a ir sumando hta k
                  a(n+l)= a(j)
-                 a(n+l)%r(3)=a(j)%r(3)+z0       ! "subo" posic. en z
-                 a(n+l)%rold(3)=a(j)%rold(3)+z0
-                 a(n+l)%rnew(3)=a(j)%rnew(3)+z0
+                 a(n+l)%r(3)=a(j)%r(3)+ (zmax-z0)       ! "subo" posic. en z
+                 a(n+l)%rold(3)=a(j)%rold(3)+ (zmax-z0)
+                 a(n+l)%rnew(3)=a(j)%rnew(3)+ (zmax-z0)
          endif
        enddo
 
@@ -276,12 +277,14 @@ contains
     integer::i
 
     lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las a(i)%r(3) de las que estén sobre z0
+    print *, rho0-rho
     
     do i=1,n
        if (a(i)%r(3)>z0) a(i)%r(3)=a(i)%r(3)-lohi*(a(i)%r(3)-z0)
     enddo
 
     zmax=zmax-lohi*(zmax-z0)
+
 
 
   endsubroutine
@@ -340,7 +343,7 @@ end function gasdev
 ! Integrac. browniana
 
 subroutine cbrownian(a,h,gama,Tsist)
-type(atom),intent(inout):: a(n)
+type(atom),intent(inout)        :: a(n)
 real(dp),intent(in)     :: h,gama,Tsist !Acá irían dist. gama
 real(dp)                :: fac1,fac2,r1,posold,g
 integer                 :: i,j
@@ -427,7 +430,7 @@ endsubroutine
 subroutine ermak_a(a,ranv) !Actualiza posic.
 
 ! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263.
-type(atom),intent(inout)      :: a(n)
+type(atom),intent(inout)        :: a(n)
 real(dp),intent(out)          :: ranv(n,3)                                                               
 real(dp)                      :: r1 ,r2, ranr,g                                                               
 integer                       :: i,j                                                                   
@@ -540,10 +543,12 @@ endsubroutine
 
 
 subroutine fuerza(a,eps,r0) ! según LJ
-type(atom),intent(inout):: a(n) 
-real(dp)                :: vd(3),dr,aux,b,c
-real(dp),intent(in)     :: eps(3,3),r0(3,3)
-integer                 :: i,j,l,k,m
+type(atom),intent(inout) :: a(n) ! esto era intent (in), más lo de abajo. ¿Ahora lo paso 
+                                                    ! a intent(inout)?
+!real(dp),intent(out):: a(n)%energy,a(n)%f(3)
+real(dp)            :: vd(3),dr,aux,b,c
+real(dp),intent(in) :: eps(3,3),r0(3,3)
+integer         :: i,j,l,k,m
 
 do i=1, n
   a(i)%f(:) = 0._dp
@@ -580,13 +585,13 @@ do i = 1, n-1
 
     dr=sqrt(dr)
 
-    ! factores para f
+    !factores para f
     b=r0(k,m)**6
     c=eps(k,m)*12._dp*b  
     c=c/(dr**7)
     b=b/(dr**6)
 
-    ! derivado el pot de LJ
+    !derivado el pot de LJ
     aux=c*(b-1)     
 
     a(i)%f(:)=a(i)%f(:)+aux*vd(:)/dr
@@ -594,7 +599,7 @@ do i = 1, n-1
 
     aux = eps(k,m)*b*(b-2)
 
-    ! el pot de LJ+epsilon
+    !el pot de LJ+epsilon
     aux=aux+eps(k,m)   
 
     a(i)%energy = a(i)%energy + aux*.5_dp
@@ -606,9 +611,10 @@ enddo
 end subroutine fuerza
 
 subroutine knock(a) !Congela o no
+!real(dp),intent(in)::a(n)%rold(3)
 type(atom),intent(inout)::a(n)
-real(dp)                ::g,vd(3),dr
-integer                 ::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+real(dp)::g,vd(3),dr
+integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
 
 do i = 1, n-1
 
@@ -681,9 +687,10 @@ enddo
 endsubroutine
 
 subroutine knock2(a) ! Rebote brusco
+!real(dp),intent(in)::a(n)%rold(3)
 type(atom),intent(inout)::a(n)
-real(dp)                ::g,vd(3),dr
-integer                 ::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+real(dp)::g,vd(3),dr
+integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
   
 ! Por todos los pares de particulas
 do i = 1, n-1
