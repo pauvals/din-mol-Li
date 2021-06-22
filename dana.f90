@@ -27,6 +27,7 @@ program din_mol_Li
           integer :: tipo
   endtype
   type(atom), allocatable :: a(:) !,xa(:) ! átomo y el auxiliar
+  type(atom), allocatable :: chunk(:)
   real(dp)            :: prob
 
   ! Parametros de integración
@@ -42,7 +43,8 @@ program din_mol_Li
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros 
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
-  real(dp)            :: z1, dist     ! Para ajuste de reservorio
+  real(dp)            :: z0,z1        ! Para ajuste de reservorio
+  real(dp),parameter  :: dist=50._dp
   
   ! Esto es para Ermak
   real(dp)            :: cc0,cc1,cc2
@@ -76,13 +78,36 @@ program din_mol_Li
   end do
   close(11)
 
-
+ 
   ! Valores iniciales
   z0=100._dp
-  zmax=200._dp 
   ! Calcula rho-densidad reservorio inicial
   call set_rho(rho) 
   rho0=rho
+                       
+  ! Crear chunk of atoms
+ 
+  ! Cuento partículas en volumen a modificar
+  k = 0
+  z1=z0+dist
+  zmax=z1+dist
+  do j=1,n
+    if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
+        k = k + 1
+    endif
+  enddo
+  allocate(chunk(k))
+  k=0
+  do j=1,n
+    if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
+      k=k+1
+      chunk(k)=a(j)
+    endif
+  enddo
+ 
+  ! print *, 'k=', k
+               
+
 
   ! Valores de epsilon y r0 :P
   eps(:,2)=0
@@ -144,7 +169,6 @@ program din_mol_Li
 
     ! Ajuste de tamaño, y cant. de partículas en reservorio
     call set_rho(rho)
-    call maxz(zmax)
     call mv_reserva(a)
 
     ! Salida
@@ -169,54 +193,26 @@ contains
     type(atom),intent(inout), allocatable        :: a(:)
     type(atom), allocatable        :: xa(:)
 
-    ! Seleccionar CG de mayor z, para comparar posic. de reservorio
-    ! (Distancia dendrita-reservorio igual a 100 A)
-    z1= 0.0_dp
-    do j=1,n
-      if (a(j)%sym=='CG') then
-              if (a(j)%r(3)>z1) z1= a(j)%r(3)
-      endif
-    enddo
-    ! print *, 'z1=', z1
-
-    dist= 100._dp - (z0 - z1) 
-    ! print *, 'dist= 100-(z0 - z1)= ', dist
-
-    if (dist > 5._dp) then
+    if(abs(rho0-rho)>0.1*rho0) then
        z0= z0 + dist
-       ! print *, 'z0= ', z0
+       z1= z1 + dist
        zmax= zmax + dist
-       ! print *, 'zmax= ', zmax
-
-       ! Cuento partículas en volumen a modificar
-       k = 0
-       do j=1,n
-         if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then 
-             k = k + 1
-         endif
-       enddo
-       ! print *, 'k=', k
 
        ! Hacer deallocate hace que pierda la info ya guardada en las variables... : haremos move alloc
        if (size(a) < n+k) then
-         allocate (xa(n+5*k))
+         allocate (xa(n+size(chunk))
          xa(1:n)= a(1:n)        ! copiado de los datos
          call move_alloc(from= xa, to= a)
        endif
 
        ! Nuevas partícs. reciben props. de otras ya existentes 
-       l = 0
-       do j=1,n
-         if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then  ! desastroso
-                 l = l + 1      ! va a ir sumando hta k
-                 a(n+l)= a(j)
-                 a(n+l)%r(3)=a(j)%r(3)+ (zmax-z0)       ! "subo" posic. en z
-                 a(n+l)%rold(3)=a(j)%rold(3)+ (zmax-z0)
-                 a(n+l)%rnew(3)=a(j)%rnew(3)+ (zmax-z0)
-         endif
-       enddo
+       chunk(:)%r(3)=chunk(:)%r(3)+ dist
+       chunk(:)%rold(3)=chunk(:)%rold(3)+ dist
+       chunk(:)%rnew(3)=chunk(:)%rnew(3)+ dist
+       a(n+1,n+size(chunk))=chunk(:)
 
-       n= n + k
+
+       n= n + size(chunk)
     endif
 
   endsubroutine
@@ -256,19 +252,13 @@ contains
     min_vol=rmax**2*2.5_dp
 
     do i=1,n !Esto debería contar las partícs. por encima de z0
-    if (a(i)%r(3)>z0) then
+    if (a(i)%r(3)>z0.and.a(i)%r(3)<z1) then
       g=g+1
     endif
     enddo
 
-    vol=rmax**2*(zmax-z0) !zmax es lo que iré recalculando, pa la próx. iteración
-    
-    if (vol<min_vol) stop !Si el V del reservorio se hace pequeño, corta todo, sin escribir este último
-              !resultado.
-
+    vol=rmax**2*(z1-z0) !zmax es lo que iré recalculando, pa la próx. iteración
     rho= g/vol
-
-
   endsubroutine
 
   subroutine maxz(zmax) !Ajusta caja con el mov. de partícs.
