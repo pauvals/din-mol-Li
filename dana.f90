@@ -5,9 +5,9 @@ program din_mol_Li
   integer,parameter     :: dp=8
   
   !Cosas del sistema  #what a quilombo
-  integer               :: n               !Nro de particulas
+  integer               :: n, nx                !Nro de particulas
   real(dp), parameter   :: rmax=100._dp, o=0._dp, box=rmax-o, tau=0.1_dp !Largo de la caja, tau p/ rho
-  real(dp)              :: z0, zmax             ! Base y techo del reservorio
+  real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
   real(dp)              :: eps(3,3),r0(3,3)     ! eps y r0 definidas como matrices para c/ tipo
@@ -43,7 +43,6 @@ program din_mol_Li
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros 
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
-  real(dp)            :: z0,z1        ! Para ajuste de reservorio
   real(dp),parameter  :: dist=50._dp
   
   ! Esto es para Ermak
@@ -85,18 +84,20 @@ program din_mol_Li
   call set_rho(rho) 
   rho0=rho
                        
-  ! Crear chunk of atoms
- 
-  ! Cuento partículas en volumen a modificar
+  ! Crear chunk of atoms:
+  ! Cuenta partículas en volumen a modificar
   k = 0
-  z1=z0+dist
-  zmax=z1+dist
+  z1 = z0+dist
+  zmax = z1+dist ! 200 A
   do j=1,n
     if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
         k = k + 1
     endif
   enddo
   allocate(chunk(k))
+  nx = size(chunk) !guardo el valor de k
+
+  ! Asigna propiedades al bloque de partículas
   k=0
   do j=1,n
     if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
@@ -105,25 +106,21 @@ program din_mol_Li
     endif
   enddo
  
-  ! print *, 'k=', k
-               
-
-
   ! Valores de epsilon y r0 :P
-  eps(:,2)=0
-  r0(:,2)=0
-  eps(2,:)=0
-  r0(2,:)=0
-  r0(2,1)=3.5_dp
-  r0(1,2)=3.5_dp
-  eps(1,1)=2313.6_dp
-  r0(1,1)=3.2_dp
-  eps(3,3)=121._dp
-  r0(3,3)=3.61_dp
-  eps(1,3)=529.1_dp
-  eps(3,1)=eps(1,3)
-  r0(1,3)=1.564_dp
-  r0(3,1)=r0(1,3)
+  eps(:,2) = 0
+  r0(:,2)  = 0
+  eps(2,:) = 0
+  r0(2,:)  = 0
+  r0(2,1)  = 3.5_dp
+  r0(1,2)  = 3.5_dp
+  eps(1,1) = 2313.6_dp
+  r0(1,1)  = 3.2_dp
+  eps(3,3) = 121._dp
+  r0(3,3)  = 3.61_dp
+  eps(1,3) = 529.1_dp
+  eps(3,1) = eps(1,3)
+  r0(1,3)  = 1.564_dp
+  r0(3,1)  = r0(1,3)
 
   ! Calculo la velocidad neta del sistema
   ! Sino se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
@@ -134,7 +131,8 @@ program din_mol_Li
 
   ! Sustraer la velocidad neta
   do i=1,n
-    a(i)%rold(:)=a(i)%rold(:)-vm(:)
+    a(i)%rold(:) = a(i)%rold(:)-vm(:)
+    ! a(i)%v(:) = (a(:)%r(:)-a(:)%rold(:))/h ! calcula vel. inic.
   end do
 
   ! calculo vel. inic.
@@ -145,8 +143,8 @@ program din_mol_Li
 
   ! calculo vel. y acelerac. iniciales
   do i=1,n
-     a(i)%v(:)=(a(i)%r(:)-a(i)%rold(:))/h
-     a(i)%acel(:)=a(i)%f(:)/a(i)%m
+     a(i)%v(:) = (a(i)%r(:)-a(i)%rold(:))/h
+     a(i)%acel(:) = a(i)%f(:)/a(i)%m
  enddo
   
   ! Abro archivos de salida
@@ -169,7 +167,7 @@ program din_mol_Li
 
     ! Ajuste de tamaño, y cant. de partículas en reservorio
     call set_rho(rho)
-    call mv_reserva(a)
+    call mv_reserva(a, nx)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -188,19 +186,20 @@ program din_mol_Li
 
 contains
 
-  subroutine mv_reserva(a) ! Muevo reservorio y agrego partículas
-    integer::j,l,k         ! pierde acceso a la k global 
-    type(atom),intent(inout), allocatable        :: a(:)
+  subroutine mv_reserva(a, nx) ! Muevo reservorio y agrego partículas
+    integer :: j,l,k         ! pierde acceso a la k global 
+    integer, intent(in) :: nx 
+    type(atom),intent(inout), allocatable   :: a(:)
     type(atom), allocatable        :: xa(:)
 
-    if(abs(rho0-rho)>0.1*rho0) then
-       z0= z0 + dist
-       z1= z1 + dist
-       zmax= zmax + dist
+    if(abs(rho0-rho)>0.1*rho0) then ! de esta forma ya cumple tb. con agrandar reservorio
+       z0 = z0 + dist
+       z1 = z1 + dist
+       zmax = zmax + dist
 
        ! Hacer deallocate hace que pierda la info ya guardada en las variables... : haremos move alloc
-       if (size(a) < n+k) then
-         allocate (xa(n+size(chunk))
+       if (size(a) < n+nx) then 
+         allocate (xa(n+size(chunk)))
          xa(1:n)= a(1:n)        ! copiado de los datos
          call move_alloc(from= xa, to= a)
        endif
@@ -209,8 +208,7 @@ contains
        chunk(:)%r(3)=chunk(:)%r(3)+ dist
        chunk(:)%rold(3)=chunk(:)%rold(3)+ dist
        chunk(:)%rnew(3)=chunk(:)%rnew(3)+ dist
-       a(n+1,n+size(chunk))=chunk(:)
-
+       a(n+1:n+size(chunk))=chunk(:)
 
        n= n + size(chunk)
     endif
@@ -218,7 +216,7 @@ contains
   endsubroutine
 
   subroutine salida()  !Donde escribe los datos calc. :P
-    integer::j !Siempre hay que definirlos =O siempre privados
+    integer :: j !Siempre hay que definirlos =O siempre privados
     
     ! t, suma Epot+Ecin
     write(12,*) t,sum(a(:)%energy)
