@@ -277,7 +277,7 @@ contains
     integer::i
 
     lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las a(i)%r(3) de las que estén sobre z0
-    print *, rho0-rho
+    ! print *, rho0-rho
     
     do i=1,n
        if (a(i)%r(3)>z0) a(i)%r(3)=a(i)%r(3)-lohi*(a(i)%r(3)-z0)
