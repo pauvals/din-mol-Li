@@ -51,6 +51,10 @@ program din_mol_Li
   real(dp)            :: crv1,crv2
   ! real(dp)            :: ranv(n,3),a(n)%acel(3) !de usar esto también hay que hacer allocatable
 
+  open(25,File='version')
+  write(25,*) PACKAGE_VERSION
+  close(25)
+
   ! Leer semilla, probabilidad, nro. pasos
   open(15,File='entrada.ini')
   read(15,*) idum 
