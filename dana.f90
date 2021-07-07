@@ -80,6 +80,8 @@ program din_mol_Li
  
   ! Valores iniciales
   z0=100._dp
+  z1 = z0 +dist 
+  zmax = z1+dist ! 200 A
   ! Calcula rho-densidad reservorio inicial
   call set_rho(rho) 
   rho0=rho
@@ -87,8 +89,6 @@ program din_mol_Li
   ! Crear chunk of atoms:
   ! Cuenta partículas en volumen a modificar
   k = 0
-  z1 = z0+dist
-  zmax = z1+dist ! 200 A
   do j=1,n
     if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
         k = k + 1
