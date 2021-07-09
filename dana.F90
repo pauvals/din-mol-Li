@@ -63,9 +63,6 @@ program din_mol_Li
   read(15,*) nwr
   close(15)
 
-  ! Nro. partículas (quizás tb. en entrada poner ¿?)
-  ! n = 2000
-
   ! Leer configuración inicial
   open(11,File='posic_inic.xyz')
   read(11,*) n
@@ -86,6 +83,7 @@ program din_mol_Li
   z0=100._dp
   z1 = z0 +dist 
   zmax = z1+dist ! 200 A
+
   ! Calcula rho-densidad reservorio inicial
   call set_rho(rho) 
   rho0=rho
