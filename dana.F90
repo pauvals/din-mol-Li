@@ -44,7 +44,8 @@ program din_mol_Li
   integer             :: i,j,k        ! Enteros 
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
   real(dp),parameter  :: dist=50._dp
-  
+  integer             :: PACKAGE_VERSION ! REVISAR
+
   ! Esto es para Ermak
   real(dp)            :: cc0,cc1,cc2
   real(dp)            :: sdr,sdv,skt
@@ -194,7 +195,7 @@ contains
     type(atom),intent(inout), allocatable   :: a(:)
     type(atom), allocatable        :: xa(:)
 
-    if(abs(rho0-rho)>0.1*rho0) then ! de esta forma ya cumple tb. con agrandar reservorio
+    if(abs(rho0-rho)>0.2*rho0) then ! de esta forma ya cumple tb. con agrandar reservorio
        z0 = z0 + dist
        z1 = z1 + dist
        zmax = zmax + dist
@@ -243,6 +244,8 @@ contains
 
 
   subroutine set_rho(rho) !Densidad/concentrac.
+    ! Calculada para un volumen considerado reservorio, "debajo" está el sistema, y "encima" está un volumen extra
+    ! de átomos.
 
     integer::i,g
     real(dp)::vol,min_vol
@@ -257,11 +260,12 @@ contains
     endif
     enddo
 
-    vol=rmax**2*(z1-z0) !zmax es lo que iré recalculando, pa la próx. iteración
+    vol=rmax**2*(z1-z0) 
     rho= g/vol
   endsubroutine
 
   subroutine maxz(zmax) !Ajusta caja con el mov. de partícs.
+    ! Ajusta el "máximo absoluto" en z de la caja de simulación
     real(dp)::lohi !Like a valley/bird in the sky
     real(dp),intent(inout)::zmax
     integer::i
@@ -275,34 +279,31 @@ contains
 
     zmax=zmax-lohi*(zmax-z0)
 
-
-
   endsubroutine
 
 
-function gasdev() !Nro aleat. 
-real(dp)                  :: rsq,v1,v2
-real(dp), save            :: g
-real(dp)                  :: gasdev
-logical, save             :: gaus_stored=.false.
-if (gaus_stored) then
-  gasdev=g
-  gaus_stored=.false.
-else
-  do
-    v1=2.0_dp*ran(idum)-1.0_dp
-    v2=2.0_dp*ran(idum)-1.0_dp
-    rsq=v1**2+v2**2
-    if (rsq > 0._dp .and. rsq < 1._dp) exit
-  end do
-  rsq=sqrt(-2.0_dp*log(rsq)/rsq)
-  gasdev=v1*rsq
-  g=v2*rsq
-  gaus_stored=.true.
-end if
-
-end function gasdev
-
+  function gasdev() !Nro aleat. 
+    real(dp)                  :: rsq,v1,v2
+    real(dp), save            :: g
+    real(dp)                  :: gasdev
+    logical, save             :: gaus_stored=.false.
+    if (gaus_stored) then
+      gasdev=g
+      gaus_stored=.false.
+    else
+      do
+        v1=2.0_dp*ran(idum)-1.0_dp
+        v2=2.0_dp*ran(idum)-1.0_dp
+        rsq=v1**2+v2**2
+        if (rsq > 0._dp .and. rsq < 1._dp) exit
+      end do
+      rsq=sqrt(-2.0_dp*log(rsq)/rsq)
+      gasdev=v1*rsq
+      g=v2*rsq
+      gaus_stored=.true.
+    end if
+  
+  end function gasdev
 
   subroutine set_sym(i,z) !Asigna tipo a partíc.
     integer,intent(in)            :: i
