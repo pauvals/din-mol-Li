@@ -5,9 +5,9 @@ program din_mol_Li
   integer,parameter     :: dp=8
   
   !Cosas del sistema  #what a quilombo
-  integer               :: n               !Nro de particulas
+  integer               :: n, nx                !Nro de particulas
   real(dp), parameter   :: rmax=100._dp, o=0._dp, box=rmax-o, tau=0.1_dp !Largo de la caja, tau p/ rho
-  real(dp)              :: z0, zmax             ! Base y techo del reservorio
+  real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
   real(dp)              :: eps(3,3),r0(3,3)     ! eps y r0 definidas como matrices para c/ tipo
@@ -27,6 +27,7 @@ program din_mol_Li
           integer :: tipo
   endtype
   type(atom), allocatable :: a(:) !,xa(:) ! átomo y el auxiliar
+  type(atom), allocatable :: chunk(:)
   real(dp)            :: prob
 
   ! Parametros de integración
@@ -42,13 +43,18 @@ program din_mol_Li
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros 
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
-  real(dp)            :: z1, dist     ! Para ajuste de reservorio
-  
+  real(dp),parameter  :: dist=50._dp
+  integer             :: PACKAGE_VERSION ! REVISAR
+
   ! Esto es para Ermak
   real(dp)            :: cc0,cc1,cc2
   real(dp)            :: sdr,sdv,skt
   real(dp)            :: crv1,crv2
   ! real(dp)            :: ranv(n,3),a(n)%acel(3) !de usar esto también hay que hacer allocatable
+
+  open(25,File='version')
+  write(25,*) PACKAGE_VERSION
+  close(25)
 
   ! Leer semilla, probabilidad, nro. pasos
   open(15,File='entrada.ini')
@@ -57,9 +63,6 @@ program din_mol_Li
   read(15,*) nst
   read(15,*) nwr
   close(15)
-
-  ! Nro. partículas (quizás tb. en entrada poner ¿?)
-  ! n = 2000
 
   ! Leer configuración inicial
   open(11,File='posic_inic.xyz')
@@ -76,29 +79,51 @@ program din_mol_Li
   end do
   close(11)
 
-
+ 
   ! Valores iniciales
   z0=100._dp
-  zmax=200._dp 
+  z1 = z0 +dist 
+  zmax = z1+dist ! 200 A
+
   ! Calcula rho-densidad reservorio inicial
   call set_rho(rho) 
   rho0=rho
+                       
+  ! Crear chunk of atoms:
+  ! Cuenta partículas en volumen a modificar
+  k = 0
+  do j=1,n
+    if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
+        k = k + 1
+    endif
+  enddo
+  allocate(chunk(k))
+  nx = size(chunk) !guardo el valor de k
 
+  ! Asigna propiedades al bloque de partículas
+  k=0
+  do j=1,n
+    if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
+      k=k+1
+      chunk(k)=a(j)
+    endif
+  enddo
+ 
   ! Valores de epsilon y r0 :P
-  eps(:,2)=0
-  r0(:,2)=0
-  eps(2,:)=0
-  r0(2,:)=0
-  r0(2,1)=3.5_dp
-  r0(1,2)=3.5_dp
-  eps(1,1)=2313.6_dp
-  r0(1,1)=3.2_dp
-  eps(3,3)=121._dp
-  r0(3,3)=3.61_dp
-  eps(1,3)=529.1_dp
-  eps(3,1)=eps(1,3)
-  r0(1,3)=1.564_dp
-  r0(3,1)=r0(1,3)
+  eps(:,2) = 0
+  r0(:,2)  = 0
+  eps(2,:) = 0
+  r0(2,:)  = 0
+  r0(2,1)  = 3.5_dp
+  r0(1,2)  = 3.5_dp
+  eps(1,1) = 2313.6_dp
+  r0(1,1)  = 3.2_dp
+  eps(3,3) = 121._dp
+  r0(3,3)  = 3.61_dp
+  eps(1,3) = 529.1_dp
+  eps(3,1) = eps(1,3)
+  r0(1,3)  = 1.564_dp
+  r0(3,1)  = r0(1,3)
 
   ! Calculo la velocidad neta del sistema
   ! Sino se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
@@ -109,7 +134,8 @@ program din_mol_Li
 
   ! Sustraer la velocidad neta
   do i=1,n
-    a(i)%rold(:)=a(i)%rold(:)-vm(:)
+    a(i)%rold(:) = a(i)%rold(:)-vm(:)
+    ! a(i)%v(:) = (a(:)%r(:)-a(:)%rold(:))/h ! calcula vel. inic.
   end do
 
   ! calculo vel. inic.
@@ -120,8 +146,8 @@ program din_mol_Li
 
   ! calculo vel. y acelerac. iniciales
   do i=1,n
-     a(i)%v(:)=(a(i)%r(:)-a(i)%rold(:))/h
-     a(i)%acel(:)=a(i)%f(:)/a(i)%m
+     a(i)%v(:) = (a(i)%r(:)-a(i)%rold(:))/h
+     a(i)%acel(:) = a(i)%f(:)/a(i)%m
  enddo
   
   ! Abro archivos de salida
@@ -144,8 +170,7 @@ program din_mol_Li
 
     ! Ajuste de tamaño, y cant. de partículas en reservorio
     call set_rho(rho)
-    call maxz(zmax)
-    call mv_reserva(a)
+    call mv_reserva(a, nx)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -164,65 +189,37 @@ program din_mol_Li
 
 contains
 
-  subroutine mv_reserva(a) ! Muevo reservorio y agrego partículas
-    integer::j,l,k         ! pierde acceso a la k global 
-    type(atom),intent(inout), allocatable        :: a(:)
+  subroutine mv_reserva(a, nx) ! Muevo reservorio y agrego partículas
+    integer :: j,l,k         ! pierde acceso a la k global 
+    integer, intent(in) :: nx 
+    type(atom),intent(inout), allocatable   :: a(:)
     type(atom), allocatable        :: xa(:)
 
-    ! Seleccionar CG de mayor z, para comparar posic. de reservorio
-    ! (Distancia dendrita-reservorio igual a 100 A)
-    z1= 0.0_dp
-    do j=1,n
-      if (a(j)%sym=='CG') then
-              if (a(j)%r(3)>z1) z1= a(j)%r(3)
-      endif
-    enddo
-    ! print *, 'z1=', z1
-
-    dist= 100._dp - (z0 - z1) 
-    ! print *, 'dist= 100-(z0 - z1)= ', dist
-
-    if (dist > 5._dp) then
-       z0= z0 + dist
-       ! print *, 'z0= ', z0
-       zmax= zmax + dist
-       ! print *, 'zmax= ', zmax
-
-       ! Cuento partículas en volumen a modificar
-       k = 0
-       do j=1,n
-         if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then 
-             k = k + 1
-         endif
-       enddo
-       ! print *, 'k=', k
+    if(abs(rho0-rho)>0.2*rho0) then ! de esta forma ya cumple tb. con agrandar reservorio
+       z0 = z0 + dist
+       z1 = z1 + dist
+       zmax = zmax + dist
 
        ! Hacer deallocate hace que pierda la info ya guardada en las variables... : haremos move alloc
-       if (size(a) < n+k) then
-         allocate (xa(n+5*k))
+       if (size(a) < n+nx) then 
+         allocate (xa(n+size(chunk)))
          xa(1:n)= a(1:n)        ! copiado de los datos
          call move_alloc(from= xa, to= a)
        endif
 
        ! Nuevas partícs. reciben props. de otras ya existentes 
-       l = 0
-       do j=1,n
-         if (a(j)%r(3) > (z0 - dist) .and. a(j)%r(3) < z0) then  ! desastroso
-                 l = l + 1      ! va a ir sumando hta k
-                 a(n+l)= a(j)
-                 a(n+l)%r(3)=a(j)%r(3)+ (zmax-z0)       ! "subo" posic. en z
-                 a(n+l)%rold(3)=a(j)%rold(3)+ (zmax-z0)
-                 a(n+l)%rnew(3)=a(j)%rnew(3)+ (zmax-z0)
-         endif
-       enddo
+       chunk(:)%r(3)=chunk(:)%r(3)+ dist
+       chunk(:)%rold(3)=chunk(:)%rold(3)+ dist
+       chunk(:)%rnew(3)=chunk(:)%rnew(3)+ dist
+       a(n+1:n+size(chunk))=chunk(:)
 
-       n= n + k
+       n= n + size(chunk)
     endif
 
   endsubroutine
 
   subroutine salida()  !Donde escribe los datos calc. :P
-    integer::j !Siempre hay que definirlos =O siempre privados
+    integer :: j !Siempre hay que definirlos =O siempre privados
     
     ! t, suma Epot+Ecin
     write(12,*) t,sum(a(:)%energy)
@@ -247,6 +244,8 @@ contains
 
 
   subroutine set_rho(rho) !Densidad/concentrac.
+    ! Calculada para un volumen considerado reservorio, "debajo" está el sistema, y "encima" está un volumen extra
+    ! de átomos.
 
     integer::i,g
     real(dp)::vol,min_vol
@@ -256,22 +255,17 @@ contains
     min_vol=rmax**2*2.5_dp
 
     do i=1,n !Esto debería contar las partícs. por encima de z0
-    if (a(i)%r(3)>z0) then
+    if (a(i)%r(3)>z0.and.a(i)%r(3)<z1) then
       g=g+1
     endif
     enddo
 
-    vol=rmax**2*(zmax-z0) !zmax es lo que iré recalculando, pa la próx. iteración
-    
-    if (vol<min_vol) stop !Si el V del reservorio se hace pequeño, corta todo, sin escribir este último
-              !resultado.
-
+    vol=rmax**2*(z1-z0) 
     rho= g/vol
-
-
   endsubroutine
 
   subroutine maxz(zmax) !Ajusta caja con el mov. de partícs.
+    ! Ajusta el "máximo absoluto" en z de la caja de simulación
     real(dp)::lohi !Like a valley/bird in the sky
     real(dp),intent(inout)::zmax
     integer::i
@@ -285,34 +279,31 @@ contains
 
     zmax=zmax-lohi*(zmax-z0)
 
-
-
   endsubroutine
 
 
-function gasdev() !Nro aleat. 
-real(dp)                  :: rsq,v1,v2
-real(dp), save            :: g
-real(dp)                  :: gasdev
-logical, save             :: gaus_stored=.false.
-if (gaus_stored) then
-  gasdev=g
-  gaus_stored=.false.
-else
-  do
-    v1=2.0_dp*ran(idum)-1.0_dp
-    v2=2.0_dp*ran(idum)-1.0_dp
-    rsq=v1**2+v2**2
-    if (rsq > 0._dp .and. rsq < 1._dp) exit
-  end do
-  rsq=sqrt(-2.0_dp*log(rsq)/rsq)
-  gasdev=v1*rsq
-  g=v2*rsq
-  gaus_stored=.true.
-end if
-
-end function gasdev
-
+  function gasdev() !Nro aleat. 
+    real(dp)                  :: rsq,v1,v2
+    real(dp), save            :: g
+    real(dp)                  :: gasdev
+    logical, save             :: gaus_stored=.false.
+    if (gaus_stored) then
+      gasdev=g
+      gaus_stored=.false.
+    else
+      do
+        v1=2.0_dp*ran(idum)-1.0_dp
+        v2=2.0_dp*ran(idum)-1.0_dp
+        rsq=v1**2+v2**2
+        if (rsq > 0._dp .and. rsq < 1._dp) exit
+      end do
+      rsq=sqrt(-2.0_dp*log(rsq)/rsq)
+      gasdev=v1*rsq
+      g=v2*rsq
+      gaus_stored=.true.
+    end if
+  
+  end function gasdev
 
   subroutine set_sym(i,z) !Asigna tipo a partíc.
     integer,intent(in)            :: i
