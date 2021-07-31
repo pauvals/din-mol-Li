@@ -38,6 +38,8 @@ use gems_errors
 implicit none
 private
 
+public  :: update, test_update
+
 logical :: mic=.true.
 
 type(group),target,public    :: ghost
@@ -48,7 +50,7 @@ type(igroup),target,public  :: sys
 ! Box
 real(dp),public,dimension(dm),target    :: box    =1.0e6_dp  
 real(dp),public,dimension(dm)    :: box_old=0.0_dp      ! For pbcghost. Set this small to force initial ghost inclusion
-logical                          :: boxed=.false.
+logical                          :: boxed=.true.
 
 integer,parameter,public,dimension(26,3) :: n1cells = transpose(reshape( &
                    [ 1, 0, 0, -1, 0, 0,  0, 1, 0,&

@@ -29,19 +29,11 @@ integer,parameter       :: linewidth = 200
 
 
 ! Elijo el numero de dimensiones a tiempo de compilacion con el precompilador
-#ifdef DIM2
-  integer,parameter       :: dm=2    ! La dimension de la dinamica. Maximo 3
-#else
-#ifdef DIM1
-  integer,parameter       :: dm=1    ! La dimension de la dinamica. Maximo 3                    
-#else
-  integer,parameter       :: dm=3    ! La dimension de la dinamica. Maximo 3                    
-#endif
-#endif
+integer,parameter       :: dm=3    ! La dimension de la dinamica. Maximo 3                    
  
 ! Esta variable es necesaria para no tener que convertir
 ! cada vez que se necesite dm a tipo character
-character(1)  :: cdm
+character(1)  :: cdm='3'
 
 ! La dimension de proyeccion. Debe ser igual o menor a dm
 ! sirve para ignorar las otras dimensiones aunque esten

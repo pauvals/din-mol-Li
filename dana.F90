@@ -50,13 +50,12 @@ program din_mol_Li
   ! Group used to compute neighbors list
   type(ngroup)        :: list
 
-  ! Set the box
-  box(:)=100._dp
-
   ! Init groups
   call gindex%init()
   call ngindex%init()
   call list%init()
+  call sys%init()
+  call list%setrc(3.61_dp)
 
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
@@ -83,17 +82,28 @@ program din_mol_Li
     a(i)%pos_old(:)=a(i)%pos(:)
 
     ! Attach atom to the sys and ngroup
+    call sys%attach(a(i))
     call list%attach(a(i))
     call list%ref%attach(a(i))
     call list%b%attach(a(i))
+
+    ! Set pbc
+    a(i)%pbc(:)=.true.
+    a(i)%pbc(3)=.false.
   end do
   close(11)
 
- 
   ! Valores iniciales
   z0=200._dp
   z1 = z0 +dist 
   zmax = z1+dist ! 200 A
+ 
+  ! Set the box
+  box(:)=100._dp
+  box(3)=zmax
+ 
+  !Search neighbors
+  call update()
 
   ! Calcula rho-densidad reservorio inicial
   call set_rho(rho) 
@@ -171,11 +181,17 @@ program din_mol_Li
 
   do i=1,nst
 
+    box(3)=zmax
+
     ! Da un paso #wii
     ! call ermak_a(a,ranv) ! revisar declaración de ranv
     ! call fuerza(a,r0)
     ! call ermak_b(a,ranv)
     call cbrownian(a,h,gama,Tsist)
+ 
+    ! call test_update()
+    call update()
+     
     call knock2(a)          !Ve si congela o no
 
     ! Ajuste de tamaño, y cant. de partículas en reservorio
@@ -690,18 +706,31 @@ subroutine knock2(a) ! Rebote brusco
 !real(dp),intent(in)::a(n)%pos_old(3)
 type(atom),intent(inout)::a(n)
 real(dp)::g,vd(3),dr
-integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+integer::i,ii,k,j,jj,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+type(atom),pointer        :: o1,o2
+type(atom_dclist),pointer :: la
   
 ! Por todos los pares de particulas
-do i = 1, n-1
-  k=a(i)%tipo
-  do j = i+1,n
-    m=a(j)%tipo
+
+la => list%ref%alist
+do ii = 1,list%ref%nat
+  la => la%next
+  o1 => la%o
+
+  i = o1%gid(list%id)
+  k= o1%tipo
+
+  do jj = 1, list%nn(i)  ! sobre los vecinos
+
+    j = list%list(i,jj)
+    o2 => list%a(j)%o
+
+    m = o2%tipo
 
     !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
     if(k*m/=2) cycle
 
-    vd(:) = a(i)%pos(:)-a(j)%pos(:)
+    vd(:) = o1%pos(:)-o2%pos(:)
 
     !Condicion de imagen minima
     do l=1,2       !Sin contar en z ;)
