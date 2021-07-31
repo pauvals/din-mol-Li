@@ -1,0 +1,55 @@
+ Real double list:
+ First 3 nodes have real numbers
+ 4th node have a pointer to a real
+   3.1400000000000001     
+   3.5000000000000000     
+   2.6000000000000001     
+   1.0000000000000000     
+ 
+ Deleting second element
+   3.1400000000000001     
+   2.6000000000000001     
+   1.0000000000000000     
+ 
+ 
+ Lion list:
+ First 2 nodes are pointers to the lion objects
+ 3rd node has allocated a lion object
+ 4th node is a pointer to a lionking object
+ Access common properties in the class
+ a lion gold                
+ a lion brown               
+ a lion red                 
+ a lion orange              
+ 
+ Access all properties using select type.
+ simba               gold                
+ simple lion brown               
+ simple lion red                 
+ simple lion orange              
+ 
+ Access all properties using internal procedures (cleaner in my opinion)
+ simba               gold                
+ simple lion brown               
+ simple lion red                 
+ simple lion orange              
+ 
+ Removing pointer to the red lion
+ simba               gold                
+ simple lion brown               
+ simple lion orange              
+ Lion circular double list:
+ First 2 nodes are pointers to the lion objects
+ 3rd node has allocated a lion object
+ 4th node is a pointer to a lionking object
+ Access all properties using internal procedures (cleaner in my opinion)
+ simba               gold                
+ simple lion brown               
+ simple lion red                 
+ simple lion orange              
+ 
+ Deallocating the brown lion
+ simba               gold                
+ simple lion red                 
+ simple lion orange              
+ 
