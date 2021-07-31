@@ -36,6 +36,7 @@ use gems_errors
 ! use gems_algebra
 
 implicit none
+private
 
 logical :: mic=.true.
 
@@ -45,13 +46,8 @@ type(group),target,public    :: ghost
 type(igroup),target,public  :: sys
    
 ! Box
-real(dp),public,dimension(dm,dm) :: tbox   =0.0_dp
 real(dp),public,dimension(dm),target    :: box    =1.0e6_dp  
-real(dp),public,dimension(dm)    :: box2   =5.0e5_dp  , &
-                                    one_box=1.0e-6_dp , &
-                                    one_box2=2.5e-5_dp, &
-                                    box_old=0.0_dp      ! For pbcghost. Set this small to force initial ghost inclusion
-real(dp),public                  :: box_vol=1.0e18_dp
+real(dp),public,dimension(dm)    :: box_old=0.0_dp      ! For pbcghost. Set this small to force initial ghost inclusion
 logical                          :: boxed=.false.
 
 integer,parameter,public,dimension(26,3) :: n1cells = transpose(reshape( &
@@ -121,7 +117,7 @@ end type
 ! A general interaction is of type ngroup%a<ngroup%b, i.e. forces are
 ! computed in group a given group b. The intrinsic ngroup gives an index to
 ! give an index to each atom.
-type, abstract, extends(igroup), public :: ngroup
+type, extends(igroup), public :: ngroup
                        
   ! The reference group
   type(group)   :: ref
@@ -160,12 +156,6 @@ type, abstract, extends(igroup), public :: ngroup
     procedure :: grow_abstract => ngroup_grow
 
     procedure :: setrc => ngroup_setrc
-
-    ! The calculation
-    procedure(ngroup0),deferred :: interact
-
-    ! The CLI used to read parameters
-    procedure(ngroup0),nopass,deferred :: cli
 
 endtype
 
@@ -1090,7 +1080,7 @@ la => ghost%alist
 do i = 1,ghost%nat
   la => la%next
   o => la%o
-  if (updatebcr) o%boxcr(:)=floor(o%pos(:)*one_box(:))
+  if (updatebcr) o%boxcr(:)=floor(o%pos(:)/box(:))
   ! Save positions
   ! o%pos_old(:)=o%pos(:)
 enddo

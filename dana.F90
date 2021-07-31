@@ -1,5 +1,6 @@
 program din_mol_Li
-  use gems_groups, only: atom
+  use gems_groups
+  use gems_neighbor
 
   implicit none
   
@@ -7,7 +8,7 @@ program din_mol_Li
   
   !Cosas del sistema  #what a quilombo
   integer               :: n, nx                !Nro de particulas
-  real(dp), parameter   :: rmax=100._dp, o=0._dp, box=rmax-o, tau=0.1_dp !Largo de la caja, tau p/ rho
+  real(dp), parameter   :: rmax=100._dp, o=0._dp, tau=0.1_dp !Largo de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
@@ -21,7 +22,7 @@ program din_mol_Li
   real(dp), parameter :: kT_ui=kB_ui*300._dp  !en ui, la T= 300 K
   
   ! Variables dinámicas, agrupadas en átomo
-  type(atom), allocatable :: a(:) !,xa(:) ! átomo y el auxiliar
+  type(atom), allocatable, target :: a(:) !,xa(:) ! átomo y el auxiliar
   type(atom), allocatable :: chunk(:)
   real(dp)            :: prob
 
@@ -45,6 +46,17 @@ program din_mol_Li
   real(dp)            :: sdr,sdv,skt
   real(dp)            :: crv1,crv2
   ! real(dp)            :: ranv(n,3),a(n)%acel(3) !de usar esto también hay que hacer allocatable
+
+  ! Group used to compute neighbors list
+  type(ngroup)        :: list
+
+  ! Set the box
+  box(:)=100._dp
+
+  ! Init groups
+  call gindex%init()
+  call ngindex%init()
+  call list%init()
 
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
@@ -70,6 +82,10 @@ program din_mol_Li
     a(i)%force(:)=0._dp
     a(i)%pos_old(:)=a(i)%pos(:)
 
+    ! Attach atom to the sys and ngroup
+    call list%attach(a(i))
+    call list%ref%attach(a(i))
+    call list%b%attach(a(i))
   end do
   close(11)
 
@@ -355,8 +371,8 @@ do i = 1,n
 
     if(j<3) then
       ! PBC en x e y
-      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box
-      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box
+      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box(j)
+      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box(j)
     else  
       !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
       ! Rebote en zmax
@@ -457,8 +473,8 @@ do i = 1,n
 
     !Pongo condiciones de caja
     if(j<3) then
-      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box
-      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box
+      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box(j)
+      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box(j)
     else  !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
 
       if(a(i)%pos(j)>zmax) then
@@ -552,10 +568,10 @@ do i = 1, n-1
     
     !Armar la caja 
     do l=1,2       !Sin contar en z ;)
-      if (vd(l)>box*.5_dp) then
-        vd(l)=vd(l)-box
-      else if (vd(l)<-box*.5_dp) then
-        vd(l)=vd(l)+box             
+      if (vd(l)>box(l)*.5_dp) then
+        vd(l)=vd(l)-box(l)
+      else if (vd(l)<-box(l)*.5_dp) then
+        vd(l)=vd(l)+box(l)
       endif
        
       ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
@@ -612,10 +628,10 @@ do i = 1, n-1
 
      !Pruebo armar la caja 
      do l=1,2       !Sin contar en z ;)
-       if (vd(l)>box*.5_dp) then
-       vd(l)=vd(l)-box
-       else if (vd(l)<-box*.5_dp) then
-       vd(l)=vd(l)+box             
+       if (vd(l)>box(l)*.5_dp) then
+       vd(l)=vd(l)-box(l)
+       else if (vd(l)<-box(l)*.5_dp) then
+       vd(l)=vd(l)+box(l)
        endif
      
      ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
@@ -640,10 +656,10 @@ do i = 1, n-1
 
       !Pruebo armar la caja 
       do l=1,2       !Sin contar en z ;)
-        if (vd(l)>box*.5_dp) then
-          vd(l)=vd(l)-box
-        else if (vd(l)<-box*.5_dp) then
-          vd(l)=vd(l)+box             
+        if (vd(l)>box(l)*.5_dp) then
+          vd(l)=vd(l)-box(l)
+        else if (vd(l)<-box(l)*.5_dp) then
+          vd(l)=vd(l)+box(l)
         endif
        
       ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
@@ -689,10 +705,10 @@ do i = 1, n-1
 
     !Condicion de imagen minima
     do l=1,2       !Sin contar en z ;)
-       if (vd(l)>box*.5_dp) then
-         vd(l)=vd(l)-box
-       else if (vd(l)<-box*.5_dp) then
-         vd(l)=vd(l)+box             
+       if (vd(l)>box(l)*.5_dp) then
+         vd(l)=vd(l)-box(l)
+       else if (vd(l)<-box(l)*.5_dp) then
+         vd(l)=vd(l)+box(l)
        endif
     enddo
 

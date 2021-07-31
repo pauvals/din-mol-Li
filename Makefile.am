@@ -67,7 +67,7 @@ debug:
 all: dana
 
 Constants.o:     
-dana.o: Groups.o    
+dana.o: Groups.o Neighbor.o
 Errors.o: Constants.o
 Groups.o: Constants.o 
 Neighbor.o:  Constants.o Groups.o
