@@ -1,5 +1,6 @@
 program din_mol_Li
-  
+  use gems_groups, only: atom
+
   implicit none
   
   integer,parameter     :: dp=8
@@ -20,12 +21,6 @@ program din_mol_Li
   real(dp), parameter :: kT_ui=kB_ui*300._dp  !en ui, la T= 300 K
   
   ! Variables dinámicas, agrupadas en átomo
-  type :: atom ! :o
-          real(dp), dimension(3) :: r, rold, rnew, v, f, acel
-          real(dp) :: m, energy
-          character(2) :: sym
-          integer :: tipo
-  endtype
   type(atom), allocatable :: a(:) !,xa(:) ! átomo y el auxiliar
   type(atom), allocatable :: chunk(:)
   real(dp)            :: prob
@@ -70,10 +65,10 @@ program din_mol_Li
   allocate(a(n))
 
   do i=1,n
-    read(11,*) a(i)%sym,a(i)%r(:),a(i)%m
+    read(11,*) a(i)%sym,a(i)%pos(:),a(i)%m
     call set_sym(i,a(i)%sym)  ! Asigna algunos valores según tipo de átomo 
-    a(i)%f(:)=0._dp
-    a(i)%rold(:)=a(i)%r(:)
+    a(i)%force(:)=0._dp
+    a(i)%pos_old(:)=a(i)%pos(:)
 
   end do
   close(11)
@@ -92,7 +87,7 @@ program din_mol_Li
   ! Cuenta partículas en volumen a modificar
   k = 0
   do j=1,n
-    if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
+    if (a(j)%pos(3) > z1 .and. a(j)%pos(3) < zmax) then 
         k = k + 1
     endif
   enddo
@@ -102,7 +97,7 @@ program din_mol_Li
   ! Asigna propiedades al bloque de partículas
   k=0
   do j=1,n
-    if (a(j)%r(3) > z1 .and. a(j)%r(3) < zmax) then 
+    if (a(j)%pos(3) > z1 .and. a(j)%pos(3) < zmax) then 
       k=k+1
       chunk(k)=a(j)
     endif
@@ -128,25 +123,25 @@ program din_mol_Li
   ! Sino se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
   ! internas ;)
   do k=1,3
-    vm(k)=sum(a(:)%r(k)-a(:)%rold(k))/n
+    vm(k)=sum(a(:)%pos(k)-a(:)%pos_old(k))/n
   enddo
 
   ! Sustraer la velocidad neta
   do i=1,n
-    a(i)%rold(:) = a(i)%rold(:)-vm(:)
-    ! a(i)%v(:) = (a(:)%r(:)-a(:)%rold(:))/h ! calcula vel. inic.
+    a(i)%pos_old(:) = a(i)%pos_old(:)-vm(:)
+    ! a(i)%vel(:) = (a(:)%pos(:)-a(:)%pos_old(:))/h ! calcula vel. inic.
   end do
 
   ! calculo vel. inic.
-  ! a(:)%v(:)=(a(:)%r(:)-a(:)%rold(:))/h
+  ! a(:)%vel(:)=(a(:)%pos(:)-a(:)%pos_old(:))/h
 
   ! Valores inic. de las ctes. de Ermak
   ! call set_ermak(h,gama,Tsist) 
 
   ! calculo vel. y acelerac. iniciales
   do i=1,n
-     a(i)%v(:) = (a(i)%r(:)-a(i)%rold(:))/h
-     a(i)%acel(:) = a(i)%f(:)/a(i)%m
+     a(i)%vel(:) = (a(i)%pos(:)-a(i)%pos_old(:))/h
+     a(i)%acel(:) = a(i)%force(:)/a(i)%m
  enddo
   
   ! Abro archivos de salida
@@ -207,9 +202,8 @@ contains
        endif
 
        ! Nuevas partícs. reciben props. de otras ya existentes 
-       chunk(:)%r(3)=chunk(:)%r(3)+ dist
-       chunk(:)%rold(3)=chunk(:)%rold(3)+ dist
-       chunk(:)%rnew(3)=chunk(:)%rnew(3)+ dist
+       chunk(:)%pos(3)=chunk(:)%pos(3)+ dist
+       chunk(:)%pos_old(3)=chunk(:)%pos_old(3)+ dist
        a(n+1:n+size(chunk))=chunk(:)
 
        n= n + size(chunk)
@@ -228,7 +222,7 @@ contains
     write(11,*) 
     
     do j =1,n
-     write(11,*) a(j)%sym,a(j)%r(:),a(j)%tipo
+     write(11,*) a(j)%sym,a(j)%pos(:),a(j)%tipo
     enddo
 
     call kion(a,temp) 
@@ -254,7 +248,7 @@ contains
     min_vol=rmax**2*2.5_dp
 
     do i=1,n !Esto debería contar las partícs. por encima de z0
-    if (a(i)%r(3)>z0.and.a(i)%r(3)<z1) then
+    if (a(i)%pos(3)>z0.and.a(i)%pos(3)<z1) then
       g=g+1
     endif
     enddo
@@ -269,11 +263,11 @@ contains
     real(dp),intent(inout)::zmax
     integer::i
 
-    lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las a(i)%r(3) de las que estén sobre z0
+    lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las a(i)%pos(3) de las que estén sobre z0
     ! print *, rho0-rho
     
     do i=1,n
-       if (a(i)%r(3)>z0) a(i)%r(3)=a(i)%r(3)-lohi*(a(i)%r(3)-z0)
+       if (a(i)%pos(3)>z0) a(i)%pos(3)=a(i)%pos(3)-lohi*(a(i)%pos(3)-z0)
     enddo
 
     zmax=zmax-lohi*(zmax-z0)
@@ -347,28 +341,28 @@ do i = 1,n
   if (a(i)%sym=='CG') cycle  
  
   !Para luego ver congelam. en knock2
-  a(i)%rold(:)=a(i)%r(:) 
+  a(i)%pos_old(:)=a(i)%pos(:) 
 
   do j = 1,3
 
     r1=gasdev()
    
-    posold = a(i)%r(j)
-    a(i)%r(j) = posold + fac1*a(i)%f(j)/a(i)%m + r1*fac2/sqrt(a(i)%m)
+    posold = a(i)%pos(j)
+    a(i)%pos(j) = posold + fac1*a(i)%force(j)/a(i)%m + r1*fac2/sqrt(a(i)%m)
 
     ! Velocidad derivada de euler para atras
-    a(i)%v(j) = (a(i)%r(j)-posold)/h
+    a(i)%vel(j) = (a(i)%pos(j)-posold)/h
 
     if(j<3) then
       ! PBC en x e y
-      if (a(i)%r(j)>rmax) a(i)%r(j)=a(i)%r(j)-box
-      if (a(i)%r(j)<o) a(i)%r(j)=a(i)%r(j)+box
+      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box
+      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box
     else  
       !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
       ! Rebote en zmax
-      if(a(i)%r(j)>zmax) then
-        a(i)%r(3)=a(i)%r(3)-2*(a(i)%r(3)-zmax)
-        a(i)%v(3)=-a(i)%v(3)   !También cambio el signo de la componente de la vel. ;)
+      if(a(i)%pos(j)>zmax) then
+        a(i)%pos(3)=a(i)%pos(3)-2*(a(i)%pos(3)-zmax)
+        a(i)%vel(3)=-a(i)%vel(3)   !También cambio el signo de la componente de la vel. ;)
       endif
     endif
 
@@ -377,15 +371,15 @@ do i = 1,n
   ! Si toca el electrodo implicito
   ! se congela con probabilidad g
   g=ran(idum)
-  if(a(i)%r(3)<1._dp) then !No importa si < o <=
+  if(a(i)%pos(3)<1._dp) then !No importa si < o <=
     if(g<prob) then
       call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
-      a(i)%r(3)=1._dp
-      ! a(i)%r(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
+      a(i)%pos(3)=1._dp
+      ! a(i)%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
       cycle !Cicla el do más cercano
     else !Acá rechazo el congelamiento y rebota
-      a(i)%r(3)=a(i)%r(3)+2*(1._dp-a(i)%r(3))
-      a(i)%v(3)=-a(i)%v(3)   !También cambio el signo de la componente de la vel. ;)
+      a(i)%pos(3)=a(i)%pos(3)+2*(1._dp-a(i)%pos(3))
+      a(i)%vel(3)=-a(i)%vel(3)   !También cambio el signo de la componente de la vel. ;)
     endif 
   endif
 
@@ -428,30 +422,30 @@ integer                       :: i,j
 do i = 1,n
 
   if (a(i)%sym=='CG') cycle  !Si ya está congelada, ni le calcula una nueva posic ;)
-  a(i)%rold(:)=a(i)%r(:) !Para luego ver congelam.
+  a(i)%pos_old(:)=a(i)%pos(:) !Para luego ver congelam.
                                                                                        
   do j = 1, 3
     r1=gasdev()
     ranr = skt/sqrt(a(i)%m)*sdr*r1 
-    a(i)%r(j) = a(i)%r(j) + cc1*a(i)%v(j) + cc2*h*a(i)%acel(j) + ranr
+    a(i)%pos(j) = a(i)%pos(j) + cc1*a(i)%vel(j) + cc2*h*a(i)%acel(j) + ranr
 
     !P/ que Li pueda congelarse, o que siga al rebote
     if (a(i)%sym/='CG')then  
-      if(a(i)%r(3)<1._dp) then !No importa si < o <=
+      if(a(i)%pos(3)<1._dp) then !No importa si < o <=
      
          g=ran(idum)
      
          if(g<prob) then
              if(a(i)%sym=='Li') then
                call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
-               a(i)%r(3)=1._dp
+               a(i)%pos(3)=1._dp
                cycle !Cicla el do más cercano
              endif
 
          else !Acá rechazo el congelamiento y rebota
       
-             a(i)%r(3)=a(i)%r(3)+2*(1._dp-a(i)%r(3))
-             a(i)%v(3)=-a(i)%v(3)
+             a(i)%pos(3)=a(i)%pos(3)+2*(1._dp-a(i)%pos(3))
+             a(i)%vel(3)=-a(i)%vel(3)
 
          endif
       endif
@@ -463,18 +457,18 @@ do i = 1,n
 
     !Pongo condiciones de caja
     if(j<3) then
-      if (a(i)%r(j)>rmax) a(i)%r(j)=a(i)%r(j)-box
-      if (a(i)%r(j)<o) a(i)%r(j)=a(i)%r(j)+box
+      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box
+      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box
     else  !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
 
-      if(a(i)%r(j)>zmax) then
-        a(i)%r(3)=a(i)%r(3)-2*(a(i)%r(3)-zmax)
-        a(i)%v(3)=-a(i)%v(3)   !También cambio el signo de la componente de la vel. ;)
+      if(a(i)%pos(j)>zmax) then
+        a(i)%pos(3)=a(i)%pos(3)-2*(a(i)%pos(3)-zmax)
+        a(i)%vel(3)=-a(i)%vel(3)   !También cambio el signo de la componente de la vel. ;)
       endif
 
-      if(a(i)%r(j)<1._dp) then
-        a(i)%r(3)=a(i)%r(3)+2*(1._dp-a(i)%r(3))
-        a(i)%v(3)=-a(i)%v(3)
+      if(a(i)%pos(j)<1._dp) then
+        a(i)%pos(3)=a(i)%pos(3)+2*(1._dp-a(i)%pos(3))
+        a(i)%vel(3)=-a(i)%vel(3)
       endif
 
     endif
@@ -495,8 +489,8 @@ do i = 1,n
   
   if(a(i)%sym=='CG') cycle !Así se ahorra un cálculo
 
-  a(i)%v(:) = cc0*a(i)%v(:) + (cc1-cc2)*a(i)%acel(:) + cc2*a(i)%f(:)/a(i)%m + ranv(i,:)
-  a(i)%acel(:)=a(i)%f(:)/a(i)%m
+  a(i)%vel(:) = cc0*a(i)%vel(:) + (cc1-cc2)*a(i)%acel(:) + cc2*a(i)%force(:)/a(i)%m + ranv(i,:)
+  a(i)%acel(:)=a(i)%force(:)/a(i)%m
 
 enddo
 
@@ -517,7 +511,7 @@ subroutine kion(a,temp)
   if(a(i)%sym=='CG') cycle !No considera Li metálico
   j=j+1 !Cuenta los iones en mov.
 
-  vd=dot_product(a(i)%v(:),a(i)%v(:))
+  vd=dot_product(a(i)%vel(:),a(i)%vel(:))
   vd=vd*a(i)%m !vel. al cuadrado ;) *porq. |v|=sqrt vd...
 
 
@@ -535,13 +529,13 @@ endsubroutine
 subroutine fuerza(a,eps,r0) ! según LJ
 type(atom),intent(inout) :: a(n) ! esto era intent (in), más lo de abajo. ¿Ahora lo paso 
                                                     ! a intent(inout)?
-!real(dp),intent(out):: a(n)%energy,a(n)%f(3)
+!real(dp),intent(out):: a(n)%energy,a(n)%force(3)
 real(dp)            :: vd(3),dr,aux,b,c
 real(dp),intent(in) :: eps(3,3),r0(3,3)
 integer         :: i,j,l,k,m
 
 do i=1, n
-  a(i)%f(:) = 0._dp
+  a(i)%force(:) = 0._dp
 enddo
 
 a(:)%energy = 0._dp
@@ -554,7 +548,7 @@ do i = 1, n-1
     
     m=a(j)%tipo   !Determina esto para luego poder elegir los valores de eps y r0
     
-    vd(:) = a(i)%r(:)-a(j)%r(:) 
+    vd(:) = a(i)%pos(:)-a(j)%pos(:) 
     
     !Armar la caja 
     do l=1,2       !Sin contar en z ;)
@@ -584,8 +578,8 @@ do i = 1, n-1
     !derivado el pot de LJ
     aux=c*(b-1)     
 
-    a(i)%f(:)=a(i)%f(:)+aux*vd(:)/dr
-    a(j)%f(:)=a(j)%f(:)-aux*vd(:)/dr
+    a(i)%force(:)=a(i)%force(:)+aux*vd(:)/dr
+    a(j)%force(:)=a(j)%force(:)-aux*vd(:)/dr
 
     aux = eps(k,m)*b*(b-2)
 
@@ -601,7 +595,7 @@ enddo
 end subroutine fuerza
 
 subroutine knock(a) !Congela o no
-!real(dp),intent(in)::a(n)%rold(3)
+!real(dp),intent(in)::a(n)%pos_old(3)
 type(atom),intent(inout)::a(n)
 real(dp)::g,vd(3),dr
 integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
@@ -614,7 +608,7 @@ do i = 1, n-1
 
     m=a(j)%tipo
 
-    vd(:) = a(i)%r(:)-a(j)%r(:)
+    vd(:) = a(i)%pos(:)-a(j)%pos(:)
 
      !Pruebo armar la caja 
      do l=1,2       !Sin contar en z ;)
@@ -642,7 +636,7 @@ do i = 1, n-1
          cng=j
       endif
 
-      vd(:)=a(lit)%rold(:)-a(cng)%r(:)  !Si la posic. vieja del Li comparada con la del CG es gde., pasa a decidir si congela.
+      vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  !Si la posic. vieja del Li comparada con la del CG es gde., pasa a decidir si congela.
 
       !Pruebo armar la caja 
       do l=1,2       !Sin contar en z ;)
@@ -663,7 +657,7 @@ do i = 1, n-1
         
         if(g<prob) then
           call set_sym(lit,'CG') 
-          if (a(lit)%r(3)>z0) stop  !Dentro de la subr. sigue siendo lit ;)
+          if (a(lit)%pos(3)>z0) stop  !Dentro de la subr. sigue siendo lit ;)
           cycle
         endif
       endif
@@ -677,7 +671,7 @@ enddo
 endsubroutine
 
 subroutine knock2(a) ! Rebote brusco
-!real(dp),intent(in)::a(n)%rold(3)
+!real(dp),intent(in)::a(n)%pos_old(3)
 type(atom),intent(inout)::a(n)
 real(dp)::g,vd(3),dr
 integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
@@ -691,7 +685,7 @@ do i = 1, n-1
     !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
     if(k*m/=2) cycle
 
-    vd(:) = a(i)%r(:)-a(j)%r(:)
+    vd(:) = a(i)%pos(:)-a(j)%pos(:)
 
     !Condicion de imagen minima
     do l=1,2       !Sin contar en z ;)
@@ -720,7 +714,7 @@ do i = 1, n-1
        call set_sym(lit,'CG') 
 
        ! Terminac. brusca del programa si la dendrita toca el z0
-       if (a(lit)%r(3)>z0) stop  
+       if (a(lit)%pos(3)>z0) stop  
 
        cycle
 
@@ -728,7 +722,7 @@ do i = 1, n-1
 
       ! Retorno la partícula a la solución
       ! Igual que Mayers
-      a(lit)%r(:)=a(lit)%rold(:)
+      a(lit)%pos(:)=a(lit)%pos_old(:)
 
     endif
 

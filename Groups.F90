@@ -48,62 +48,26 @@ type, public :: atom
   ! Propiedades que defino afuera de e para que se mas rapidamente accedida
   ! (en general la 1/masa esta en los cuellos de botella de los algoritmos)
   integer           :: tipo=0
-  real(dp)          :: mass=1.0_dp
-  real(dp)          :: q=0.0_dp  ! Carga
-  real(dp)          :: s=1.0_dp  ! sigma
-  real(dp)          :: e=0.0_dp  ! epsilon
-  character(2)  :: sym
-  integer           :: sp=0      ! Hybridization
-
-  ! Constrain. Si bconst=true el atomo tiene un constrain. Se colapsa la
-  ! fuerza en direccion al vector vconst si lconst=T o se borra la componente
-  ! de la fueza en direccion al vector si lconst=F. Idem con la velocidad. Asi
-  ! la particula queda fija en un plano o en un eje. Tambien la puedo forzar
-  ! directamente haciendolo con la posicion
-  real(dp)              :: vconst(dm)=0.0_dp
-  real(dp),allocatable  :: pconst(:) ! posicion incial del constrain
-  logical               :: bconst=.false.,lconst=.false.
-
-  !  Enlaces y moleculas.... TOFIX
-  integer      :: abondid(20)=0  ! el indicie dentro de la molecula de los asociados
-  integer      :: abonds=0  ! el numero de asociados
-  integer      :: molid=0   ! el indice de la molecula
-  integer      :: amolid=0  ! el indice dentro de la molecula
+  real(dp)          :: m=1.0_dp
+  character(2)      :: sym
 
   ! ----- Propiedades mecanicas
-  real(dp),pointer       :: pos(:)=>null(),   &!propieties of atom. [a][..][m/s][..]
-                            force(:)=>null(), &
-                            acel(:)=>null(),  & !aceleracion
-                            vel(:)=>null()
+  real(dp) :: pos(3),   &!propieties of atom. [a][..][m/s][..]
+              force(3), &
+              acel(3),  & !aceleracion
+              vel(3)
 
   !In a local atom it has the info to unwrap coordinates. In the ghost atom,
   !it has the info of the subdomain/processor it belongs.
   integer                :: boxcr(dm)=0
   logical                :: pbc(dm)=.false. !PBC para ese atomo
 
-  real(dp),dimension(dm) :: acel2  =0._dp,& !derivada primera de la aceleración
-                            acel3  =0._dp,& !derivada segunda de la aceleración
-                            acel4  =0._dp,& !derivada tercera de la aceleración
-                            pos_eq =0._dp,& !para ver el desplazamiento y decidir entrar al hyperespacio
-                            pos_v  =0._dp,& !posicion relativa al punto v
-                            vel_v  =0._dp,& !velocidad relativa al punto v
-                            vel_rot=0._dp,& !velocidad de rotacion
-                            vel_vib=0._dp,& !velocidad de vibracion
-                            pos_cm =0._dp,& !posicion relativa al cm del grupo
-                            vel_cm =0._dp   !velocidad relativa al cm del grupo
-
   !para ver el desplazamiento en la lista de vecinos. Esto lo establezco bien
   !grande para forzar la primera actualizacion del verlet
   real(dp),dimension(dm) :: pos_old =1.e8_dp
 
-  real(dp)               :: epot=0.d0,                & !energia potencial total[ev]
-                            erot=0.d0,erot_ss=0.d0,   & !energia rotacional relative to system and ss [ev]
-                            evib=0.d0,evib_ss=0.d0,   & !energia vibracional relative to system and ss [ev]
-                            rho=0.d0,cord=0.d0,       & !densidad.. o algun otro parametro
-                            border=0.d0                 !Orden de Enlace
-
-  real(dp)               :: maxdisp2=0 !desplazamiento maximo a un determinada T de grupo
-
+  real(dp)               :: energy=0.d0
+         
   contains
 
   procedure :: init => atom_allocate
@@ -335,10 +299,6 @@ public :: group_ap
 ! Index of groups (see `id` in group type)
 type(group_vop),target,public   :: gindex
 
-! TODO
-public :: group_switch_vectorial
-public :: group_switch_objeto
-
 contains
       
 ! atom events
@@ -354,10 +314,6 @@ subroutine atom_allocate(a)
 class(atom),intent(inout)    :: a
 
 ! crear un atomo
-allocate(a%pos(dm))
-allocate(a%vel(dm))
-allocate(a%force(dm))
-allocate(a%acel(dm))
 a%acel(:)=0._dp
 a%pos(:)=0._dp
 a%vel(:)=0._dp
@@ -369,11 +325,6 @@ end subroutine atom_allocate
 subroutine atom_destroy(a)
 class(atom)         :: a
 integer             :: i,j
-
-deallocate(a%pos)
-deallocate(a%vel)
-deallocate(a%force)
-deallocate(a%acel)
 
 ! Dettach the atom from all the groups
 do i=1,a%ngr
@@ -401,29 +352,16 @@ subroutine atom_asign(a1,a2)
 ! o un arreglo duro, no importa.
 type(atom) :: a1,a2
 
-a1 % pos(:)   = a2 % pos(:)
-a1 % vel(:)   = a2 % vel(:)
-a1 % force(:) = a2 % force(:)
-a1 % acel(:)  = a2 % acel(:)
+a1%m        = a2%m
+a1%pos(:)   = a2%pos(:)
+a1%vel(:)   = a2%vel(:)
+a1%force(:) = a2%force(:)
+a1%acel(:)  = a2%acel(:)
 call a1%setz(a2%sym)
 
-a1 % acel(:)    = a2 % acel(:)
-a1 % acel2(:)   = a2 % acel2(:)
-a1 % acel3(:)   = a2 % acel3(:)
-a1 % acel4(:)   = a2 % acel4(:)
 a1 % pos_old(:) = a2 % pos_old(:)
-a1 % pos_v(:)   = a2 % pos_v(:)
-a1 % vel_v(:)   = a2 % vel_v(:)
 
-a1 % epot    = a2 % epot
-a1 % erot    = a2 % erot
-a1 % erot_ss = a2 % erot_ss
-a1 % evib    = a2 % evib
-a1 % evib_ss = a2 % evib_ss
-a1 % rho     = a2 % rho
-a1 % molid   = a2 % molid
-a1 % sp      = a2 % sp
-a1 % s       = a2 % s
+a1 % energy    = a2 % energy
 
 end subroutine atom_asign
   
@@ -599,7 +537,7 @@ g%nat = g%nat + 1 ! numero de particulas
 call a%addgr(g%id)
 
 ! propiedades basicas para modificar
-g%mass = g%mass + a % mass ! masa
+g%mass = g%mass + a % m ! masa
 
 ! si esta vectorial, ahora no tiene sentido
 if(associated(g%pp)) then
@@ -652,7 +590,7 @@ do i =1,g%nat
   g%nat = g%nat - 1
 
   ! TODO: propiedades extras para modificar?
-  g%mass = g%mass - a%mass
+  g%mass = g%mass - a%m
 
   return
 enddo
@@ -848,94 +786,6 @@ g%a(j)%o=>null()
 call g%group%detach(a)
 
 end subroutine igroup_atom_detach
-
-! Index
-! -----
-
-! Hyper vector Constructors
-! =========================
-
-! El echo de que el grupo sea una lista linkeada esta indicando que es una
-! selecciona caprichosa de atomos. Esto permite aplicar disitntas subrutinas a
-! distintas selecciones caprichosas.
-
-! En muchas subrutinas, y para muchas cosas, es util constar con vectores que
-! representen el estado de este grupo.
-
-! Las subrutinas que siguen a continuacion son un parche para lograr esto. Las
-! variables atomicas, se encuentran inicialmente apuntando a vectores en el
-! systema. Luego de la seleccion caprichos por un grupo, se puede copiar
-! las variables atomicas a un vector y asociar los atomos a ese vector,
-! logrando asi un ordenamiento del grupo de forma vectorial. Si este
-! ordenamiento no existe, los punteros del grupo tendran la condicion null. Si
-! por el contrario este ordenamiento existe, los punteros del grupo apuntaran
-! al vector determinado. Esto involucra ciertos manejos que se deben realizar
-! con las siguientes subrutinas:
-
-subroutine group_switch_vectorial(g,switched)
-class(group),intent(inout)     :: g
-logical,optional,intent(out)   :: switched
-integer                        :: i
-type (atom_dclist),pointer     :: la
-
-if(present(switched)) switched=.false.
-if(associated(g%pp)) return
-if(present(switched)) switched=.true.
-
-allocate(g%pp(g%nat*dm))
-allocate(g%pv(g%nat*dm))
-allocate(g%pa(g%nat*dm))
-allocate(g%pf(g%nat*dm))
-
-la => g%alist
-do i = 1,g%nat
-  la => la%next
-  g%pp((i-1)*dm+1:i*dm) =  la%o%pos
-  g%pv((i-1)*dm+1:i*dm) =  la%o%vel
-  g%pf((i-1)*dm+1:i*dm) =  la%o%force
-  g%pa((i-1)*dm+1:i*dm) =  la%o%acel
-  deallocate(la%o%pos  )
-  deallocate(la%o%vel  )
-  deallocate(la%o%force)
-  deallocate(la%o%acel )
-  la%o%pos    => g%pp((i-1)*dm+1:i*dm)
-  la%o%vel    => g%pv((i-1)*dm+1:i*dm)
-  la%o%force  => g%pf((i-1)*dm+1:i*dm)
-  la%o%acel   => g%pa((i-1)*dm+1:i*dm)
-enddo
-
-end subroutine
-
-subroutine group_switch_objeto(g,switched)
-class(group),intent(inout)     :: g
-logical,optional,intent(out)   :: switched
-integer                        :: i
-type (atom_dclist),pointer     :: la
-
-if(present(switched)) switched=.false.
-if(.not.associated(g%pp)) return
-if(present(switched)) switched=.true.
-
-
-la => g%alist
-do i = 1,g%nat
-  la => la%next
-  allocate(la%o%pos  (dm))
-  allocate(la%o%vel  (dm))
-  allocate(la%o%force(dm))
-  allocate(la%o%acel (dm))
-  la%o%pos    = g%pp((i-1)*dm+1:i*dm)
-  la%o%vel    = g%pv((i-1)*dm+1:i*dm)
-  la%o%force  = g%pf((i-1)*dm+1:i*dm)
-  la%o%acel   = g%pa((i-1)*dm+1:i*dm)
-enddo
-
-deallocate(g%pp); g%pp=>null()
-deallocate(g%pv); g%pv=>null()
-deallocate(g%pa); g%pa=>null()
-deallocate(g%pf); g%pf=>null()
-
-end subroutine
 
 end module gems_groups
 

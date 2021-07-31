@@ -902,8 +902,7 @@ call ghost%attach(o)
 ! Assign image properties
 o%ghost=>o2
 call atom_asign(o,o2)
-o%q=o2%q
-o%id=o2%id
+o%id(:)=o2%id(:)
 o%pos(:)=o2%pos(:)+r(:)*box(:)
 o%boxcr(:)=r(:)
 
