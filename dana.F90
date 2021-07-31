@@ -44,7 +44,6 @@ program din_mol_Li
   integer             :: i,j,k        ! Enteros 
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
   real(dp),parameter  :: dist=50._dp
-  integer             :: PACKAGE_VERSION ! REVISAR
 
   ! Esto es para Ermak
   real(dp)            :: cc0,cc1,cc2
