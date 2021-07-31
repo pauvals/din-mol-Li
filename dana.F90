@@ -8,7 +8,7 @@ program din_mol_Li
   
   !Cosas del sistema  #what a quilombo
   integer               :: n, nx                !Nro de particulas
-  real(dp), parameter   :: rmax=100._dp, o=0._dp, tau=0.1_dp !Largo de la caja, tau p/ rho
+  real(dp), parameter   :: o=0._dp, tau=0.1_dp  !Largo de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
@@ -39,7 +39,7 @@ program din_mol_Li
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros 
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
-  real(dp),parameter  :: dist=50._dp
+  real(dp),parameter  :: dist=100._dp
 
   ! Esto es para Ermak
   real(dp)            :: cc0,cc1,cc2
@@ -91,7 +91,7 @@ program din_mol_Li
 
  
   ! Valores iniciales
-  z0=100._dp
+  z0=200._dp
   z1 = z0 +dist 
   zmax = z1+dist ! 200 A
 
@@ -261,7 +261,7 @@ contains
     real(dp),intent(out)::rho
 
     g=0
-    min_vol=rmax**2*2.5_dp
+    min_vol=box(1)*box(2)*2.5_dp
 
     do i=1,n !Esto debería contar las partícs. por encima de z0
     if (a(i)%pos(3)>z0.and.a(i)%pos(3)<z1) then
@@ -269,7 +269,7 @@ contains
     endif
     enddo
 
-    vol=rmax**2*(z1-z0) 
+    vol=box(1)*box(2)*(z1-z0) 
     rho= g/vol
   endsubroutine
 
@@ -371,7 +371,7 @@ do i = 1,n
 
     if(j<3) then
       ! PBC en x e y
-      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box(j)
+      if (a(i)%pos(j)>box(j)) a(i)%pos(j)=a(i)%pos(j)-box(j)
       if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box(j)
     else  
       !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
@@ -473,7 +473,7 @@ do i = 1,n
 
     !Pongo condiciones de caja
     if(j<3) then
-      if (a(i)%pos(j)>rmax) a(i)%pos(j)=a(i)%pos(j)-box(j)
+      if (a(i)%pos(j)>box(j)) a(i)%pos(j)=a(i)%pos(j)-box(j)
       if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box(j)
     else  !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
 
