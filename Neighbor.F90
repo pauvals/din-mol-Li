@@ -541,10 +541,7 @@ rcut=rcut*rcut
 ! do j = i+1,g%na+g%nag
 !   vd = g%at(j)%o%pos-g%at(i)%o%pos
 
-!OMP: Creo varios threads
 !$OMP PARALLEL
-
-!OMP: Un thread ejecuta, los demas quedan idle.
 !$OMP SINGLE
 la => g%ref%alist
 do ii = 1,g%ref%nat
@@ -608,14 +605,20 @@ rcut=rcut*rcut
 ! Sort in cells
 call g%b%sort()
 
-!Bucle sobre los atomos de g
-!$OMP  PARALLEL DO DEFAULT(NONE) &
-!$OMP& PRIVATE(rc,ic,i,j,vd,rd,nabor,nc,ai,aj,k) &
-!$OMP& SHARED(g,rcut,mic)
 la => g%ref%alist
+
+!Bucle sobre los atomos de g
+!$OMP PARALLEL
+!$OMP SINGLE 
 do ii = 1,g%ref%nat
   la => la%next
   ai => la%o
+
+  !$OMP TASK DEFAULT(NONE)             &
+  !$OMP& FIRSTPRIVATE(ai)              &
+  !$OMP& SHARED(g,rcut,mic)            &
+  !$OMP& PRIVATE(rc,i,nabor,nc,j,aj,k,vd,rd)   
+
   i = ai%gid(g%id)
 
   ! Get cell index
@@ -651,8 +654,14 @@ do ii = 1,g%ref%nat
     enddo
 
   enddo
+
+  !$OMP END TASK
+
 enddo
-!$OMP END PARALLEL DO
+
+!$OMP END SINGLE NOWAIT
+!$OMP END PARALLEL
+
 
 end subroutine ngroup_cells
 

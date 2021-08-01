@@ -25,6 +25,8 @@ include_HEADERS = $(FPTDDS)/prep.inc \
  
 DEBUG_FLAGS = -g -O0 -p
 PROF_FLAGS = -p 
+ 
+AM_FCFLAGS += $(OPENMP_CFLAGS) 
 
 if COMPILER_IS_GFORTRAN
 DEBUG_FLAGS += -fbacktrace

@@ -12,7 +12,11 @@ AM_INIT_AUTOMAKE()
 
 # Avoid make to rebuild configure
 AM_MAINTAINER_MODE
-
+ 
+# Set OpenMP flags
+# : ${enable_openmp=no}
+AC_OPENMP
+       
 # To build libraries
 AC_PROG_RANLIB
 
