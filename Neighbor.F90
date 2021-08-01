@@ -144,12 +144,15 @@ type, extends(igroup), public :: ngroup
 
   ! Always trying to use linked cell over verlet list
   procedure(ngroup_cells),pointer :: lista=>ngroup_cells
+  procedure(ngroup_cells_atom),pointer :: lista_atom=>ngroup_cells_atom
 
   contains
 
     procedure :: init => ngroup_construct
     procedure :: dest => ngroup_destroy
     procedure :: grow => ngroup_grow
+    
+    procedure :: addref => ngroup_addref
 
     ! Keep access to procedures of abstract parent
     ! see (https://fortran-lang.discourse.group/t/call-overridden-procedure-of-abstract-parent-type/590/23)
@@ -509,11 +512,29 @@ if(.not.associated(g%lista)) return
 
 if(g%b%cells) then
   g%lista => ngroup_cells
+  g%lista_atom => ngroup_cells_atom
 else
   g%lista => ngroup_verlet
+  g%lista_atom => ngroup_verlet_atom
 endif
 
 end subroutine ngroup_setlista
+
+subroutine ngroup_addref(g,a)
+class(ngroup) :: g
+class(atom)   :: a
+
+! Attach
+call g%attach(a)
+call g%ref%attach(a)
+ 
+! Check if neighbor list is in use
+if(.not.associated(g%lista)) return
+
+! Complete the neighboor list
+call g%lista_atom(a%gid(g%id))
+
+end subroutine ngroup_addref
 
 ! Search algorithms
 ! -----------------
@@ -583,6 +604,45 @@ enddo
 !$OMP END PARALLEL
 
 end subroutine ngroup_verlet
+
+subroutine ngroup_verlet_atom(g,i)
+! Search neighbors for atom i.
+class(ngroup),intent(inout)  :: g
+type(atom),pointer           :: ai,aj
+integer                      :: i,ii,j,m
+real(dp)                     :: rd,vd(dm)
+real(dp)                     :: rcut
+type(atom_dclist),pointer    :: la
+
+g%nn(i)=0
+ai => g%a(i)%o
+
+! Cut radious
+rcut=(g%rcut+nb_dcut)
+rcut=rcut*rcut
+
+! Reset number of neighbors
+m=0
+
+do j = 1, g%b%nat
+  aj=>g%b%a(j)%o
+
+  ! Skip autointeraction
+  if(associated(aj,target=ai)) cycle
+
+  vd = vdistance(ai,aj,mic)
+  rd = dot_product(vd,vd)
+
+  if (rd>rcut) cycle
+
+  ! Add j as neighbor of i.
+  m=m+1
+  g%list(i,m)=aj%gid(g%id)
+
+enddo
+g%nn(i)=m
+
+end subroutine ngroup_verlet_atom
 
 subroutine ngroup_cells(g)
 ! Build neighbors verlet list over linked cells.
@@ -664,6 +724,62 @@ enddo
 
 
 end subroutine ngroup_cells
+
+subroutine ngroup_cells_atom(g,i)
+! Search neighbors for atom i. Asume b is already sorted in cells.
+class(ngroup),intent(inout)  :: g
+type(atom), pointer          :: ai, aj
+integer                      :: i,ii,j,ic,k
+integer                      :: nabor
+real(dp)                     :: rd,vd(dm)
+real(dp)                     :: rcut
+integer                      :: rc(dm),nc(dm)
+type(atom_dclist),pointer    :: la
+
+! Set ceros
+g%nn(:)=0
+
+! Cut radious
+rcut=(g%rcut+nb_dcut)
+rcut=rcut*rcut
+
+ai => g%a(i)%o
+
+! Get cell index
+rc(:)=int(ai%pos(:)/g%b%cell(:))+1
+
+!Bucle sobre las celdas vecinas a rc(:)
+do nabor=0,26
+  nc(:)=map(:,nabor)+rc(:)
+
+  ! Check if cells should be considered and apply PBC
+  if(.not.cell_pbc(g%b,nc,mic)) cycle
+
+  !Bucle sobre los atomos de la celda vecina
+  j = g%b%head(nc(1),nc(2),nc(3))
+  do while( j>0 )
+    aj=>g%b%a(j)%o
+    k = aj%gid(g%id)
+
+    ! Next here to allow cycle
+    j = g%b%next(j)
+
+    ! Skip autointeraction
+    if(associated(aj,target=ai)) cycle
+
+    vd = vdistance(aj,ai,mic) ! respetar el orden
+    rd =  dot_product(vd,vd)
+
+    if (rd<rcut) then
+      g%nn(i)=g%nn(i)+1
+      g%list(i,g%nn(i))=k
+    endif
+
+  enddo
+
+enddo
+
+end subroutine ngroup_cells_atom
 
 ! Update search
 ! =============
