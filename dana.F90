@@ -39,7 +39,7 @@ program din_mol_Li
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
-  real(dp),parameter  :: dist=100._dp
+  real(dp)            :: dist
 
   ! Esto es para Ermak
   real(dp)            :: cc0,cc1,cc2
@@ -62,12 +62,19 @@ program din_mol_Li
   close(25)
 
   ! Leer semilla, probabilidad, nro. pasos
+  ! y otros valores iniciales
   open(15,File='entrada.ini')
   read(15,*) idum
   read(15,*) prob
   read(15,*) nst
   read(15,*) nwr
+  read(15,*) dist 
+  read(15,*) z0 
   close(15)
+
+  ! Tamaños iniciales de "reservorio"
+  z1 = z0 +dist
+  zmax = z1+dist 
 
   ! Leer configuración inicial
   open(11,File='posic_inic.xyz')
@@ -99,10 +106,6 @@ program din_mol_Li
   end do
   close(11)
 
-  ! Valores iniciales
-  z0=200._dp
-  z1 = z0 +dist
-  zmax = z1+dist ! 200 A
 
   ! Set the box
   box(:)=100._dp

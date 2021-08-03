@@ -5,7 +5,6 @@ AC_INIT([dana],
     [m4_esyscmd_s([git describe --always --abbrev=4 --dirty])],
     [pauvs@gmail.com])
 
-AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_SRCDIR(.)
 
 AM_INIT_AUTOMAKE()
