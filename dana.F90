@@ -22,8 +22,9 @@ program din_mol_Li
   real(dp), parameter :: kT_ui=kB_ui*300._dp  !en ui, la T= 300 K
  
   ! Variables dinámicas, agrupadas en átomo
-  type(atom), allocatable, target :: a(:) !,xa(:) ! átomo y el auxiliar
-  type(atom), allocatable :: chunk(:)
+  type(atom), allocatable, target :: a(:) ! átomo
+  type(atom), pointer             :: pa=>null(), pb=>null()
+  type(group)         :: chunk
   real(dp)            :: prob
 
   ! Parametros de integración
@@ -55,6 +56,7 @@ program din_mol_Li
   call ngindex%init()
   call list%init()
   call sys%init()
+  call chunk%init()
   call list%setrc(3.61_dp)
 
   open(25,File='version')
@@ -80,29 +82,36 @@ program din_mol_Li
   open(11,File='posic_inic.xyz')
   read(11,*) n
   read(11,*)
-  allocate(a(n))
 
   do i=1,n
-    read(11,*) a(i)%sym,a(i)%pos(:),a(i)%m
-    call set_sym(i,a(i)%sym)  ! Asigna algunos valores según tipo de átomo
-    a(i)%force(:)=0._dp
-    a(i)%pos_old(:)=a(i)%pos(:)
 
-    ! Attach atom to the sys
-    call sys%attach(a(i))
+    ! Allocatea el atomo-como un puntero del tipo 'atom'
+    allocate(pa)
 
-    call list%attach(a(i))
-    if (a(i)%sym=='CG') then
+    read(11,*) pa%sym,pa%pos(:),pa%m
+    call pa%setz(pa%sym) ! set_sym(pa,pa%sym) Asigna algunos valores según tipo de átomo
+    pa%force(:)=0._dp
+    pa%pos_old(:)=pa%pos(:)
+
+    ! Attach atom to the system
+    call sys%attach(pa)
+
+    call list%attach(pa)
+    if (pa%sym=='CG') then
       ! Only attach CG to ref group
-      call list%ref%attach(a(i))
+      call list%ref%attach(pa)
     else
       ! No CG atom in b group
-      call list%b%attach(a(i))
+      call list%b%attach(pa)
     endif
 
     ! Set pbc
-    a(i)%pbc(:)=.true.
-    a(i)%pbc(3)=.false.
+    pa%pbc(:)=.true.
+    pa%pbc(3)=.false.
+
+    ! Libero puntero para siguiente allocate
+    pa=>null()
+
   end do
   close(11)
 
@@ -118,25 +127,23 @@ program din_mol_Li
   call set_rho(rho)
   rho0=rho
                       
-  ! Crear chunk of atoms:
-  ! Cuenta partículas en volumen a modificar
-  k = 0
-  do j=1,n
-    if (a(j)%pos(3) > z1 .and. a(j)%pos(3) < zmax) then
-        k = k + 1
-    endif
-  enddo
-  allocate(chunk(k))
-  nx = size(chunk) !guardo el valor de k
-
-  ! Asigna propiedades al bloque de partículas
+  ! Crear chunk de atoms:
   k=0
-  do j=1,n
-    if (a(j)%pos(3) > z1 .and. a(j)%pos(3) < zmax) then
+  do j=1,sys%nat
+    pa=>sys%a(j)%o
+    if (pa%pos(3) > z1 .and. pa%pos(3) < zmax) then
+      allocate(pb)
       k=k+1
-      chunk(k)=a(j)
+
+      ! Asigna propiedades al bloque de partículas
+      call atom_asign(pb, pa)
+
+      ! Agrego un átomo a un grupo chunk
+      call chunk%attach(pb)
+      pb=>null()
     endif
   enddo
+  nx = k !guardo el valor de k
 
   ! Valores de epsilon y r0 :P
   eps(:,2) = 0
@@ -157,27 +164,25 @@ program din_mol_Li
   ! Calculo la velocidad neta del sistema
   ! Sino se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
   ! internas ;)
-  do k=1,3
-    vm(k)=sum(a(:)%pos(k)-a(:)%pos_old(k))/n
+  do k=1,sys%nat 
+    vm(:)= sum(sys%a(k)%o%pos(:) - sys%a(k)%o%pos_old(:)) /n
   enddo
 
   ! Sustraer la velocidad neta
-  do i=1,n
-    a(i)%pos_old(:) = a(i)%pos_old(:)-vm(:)
-    ! a(i)%vel(:) = (a(:)%pos(:)-a(:)%pos_old(:))/h ! calcula vel. inic.
+  do i=1,sys%nat
+    pa=>sys%a(i)%o
+    pa%pos_old(:) = pa%pos_old(:)-vm(:)
   end do
-
-  ! calculo vel. inic.
-  ! a(:)%vel(:)=(a(:)%pos(:)-a(:)%pos_old(:))/h
 
   ! Valores inic. de las ctes. de Ermak
   ! call set_ermak(h,gama,Tsist)
 
   ! calculo vel. y acelerac. iniciales
-  do i=1,n
-     a(i)%vel(:) = (a(i)%pos(:)-a(i)%pos_old(:))/h
-     a(i)%acel(:) = a(i)%force(:)/a(i)%m
- enddo
+  do i=1, sys%nat
+    pa=>sys%a(i)%o
+    pa%vel(:) = (pa%pos(:)-pa%pos_old(:))/h
+    pa%acel(:) = pa%force(:)/pa%m
+  enddo
  
   ! Abro archivos de salida
   open(11,File='Li.xyz')
@@ -196,16 +201,17 @@ program din_mol_Li
     ! call ermak_a(a,ranv) ! revisar declaración de ranv
     ! call fuerza(a,r0)
     ! call ermak_b(a,ranv)
-    call cbrownian(a,h,gama,Tsist)
+    call cbrownian(sys,h,gama,Tsist)
 
     ! call test_update()
     call update()
-    
-    call knock2(a)          !Ve si congela o no
+
+    !Ve si congela o no
+    call knock2(list)          
 
     ! Ajuste de tamaño, y cant. de partículas en reservorio
     call set_rho(rho)
-    call mv_reserva(a, nx)
+    call mv_reserva(sys, chunk, nx)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -224,49 +230,61 @@ program din_mol_Li
 
 contains
 
-  subroutine mv_reserva(a, nx) ! Muevo reservorio y agrego partículas
+  subroutine mv_reserva(g1, g2, nx) ! Muevo reservorio y agrego partículas
+    class(group)    :: g1, g2 
+    type(atom_dclist), pointer :: la
+    type(atom),pointer        :: o1,o2
     integer :: j,l,k         ! pierde acceso a la k global
     integer, intent(in) :: nx
-    type(atom),intent(inout), allocatable   :: a(:)
-    type(atom), allocatable        :: xa(:)
 
     if(abs(rho0-rho)>0.2*rho0) then ! de esta forma ya cumple tb. con agrandar reservorio
        z0 = z0 + dist
        z1 = z1 + dist
        zmax = zmax + dist
 
-       ! Hacer deallocate hace que pierda la info ya guardada en las variables... : haremos move alloc
-       if (size(a) < n+nx) then
-         allocate (xa(n+size(chunk)))
-         xa(1:n)= a(1:n)        ! copiado de los datos
-         call move_alloc(from= xa, to= a)
-       endif
+       ! copiamos los atomos que estaban en chunk a sys, pero es una copia, por eso el allocate
+       la=>g2%alist ! apunta al chunk
+       do j=1,g2%nat
+          la=>la%next
+          o1=> la%o
+          allocate(o2)
+          call g1%attach(o2)
+          call list%attach(o2)
 
-       ! Nuevas partícs. reciben props. de otras ya existentes
-       chunk(:)%pos(3)=chunk(:)%pos(3)+ dist
-       chunk(:)%pos_old(3)=chunk(:)%pos_old(3)+ dist
-       a(n+1:n+size(chunk))=chunk(:)
+          ! Nuevas partícs. reciben props. de otras ya existentes
+          o1%pos(3)=o1%pos(3)+ dist 
+          o1%pos_old(3)=o1%pos_old(3)+ dist
+          call atom_asign(o2, o1)
+          o2=>null()
+       enddo
 
-       n= n + size(chunk)
+       n= n + nx 
     endif
 
   endsubroutine
 
   subroutine salida()  !Donde escribe los datos calc. :P
-    integer :: j !Siempre hay que definirlos =O siempre privados
+    integer  :: j !Siempre hay que definirlos =O siempre privados
+    real(dp) :: energia
    
-    ! t, suma Epot+Ecin
-    write(12,*) t,sum(a(:)%energy)
+    energia= 0._dp
 
     ! Coords. de partíc.
-    write(11,*) n
+    write(11,*) sys%nat ! n
     write(11,*)
    
-    do j =1,n
-     write(11,*) a(j)%sym,a(j)%pos(:),a(j)%tipo
+    do j =1, sys%nat
+     pa=>sys%a(j)%o
+     write(11,*) pa%sym,pa%pos(:),pa%tipo
+
+     ! Para el otro archivo de salida
+     energia= energia + pa%energy 
     enddo
 
-    call kion(a,temp)
+    ! t, suma Epot+Ecin 
+    write(12,*) t, energia !sum(sys%a(:)%o%energy)
+
+    call kion(sys,temp) 
     write(13,*)t,temp
    
     write(14,*)t,rho
@@ -288,8 +306,9 @@ contains
     g=0
     min_vol=box(1)*box(2)*2.5_dp
 
-    do i=1,n !Esto debería contar las partícs. por encima de z0
-    if (a(i)%pos(3)>z0.and.a(i)%pos(3)<z1) then
+    do i=1, sys%nat !Esto debería contar las partícs. por encima de z0
+     pa=>sys%a(i)%o
+    if (pa%pos(3)>z0.and.pa%pos(3)<z1) then
       g=g+1
     endif
     enddo
@@ -307,8 +326,9 @@ contains
     lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las a(i)%pos(3) de las que estén sobre z0
     ! print *, rho0-rho
    
-    do i=1,n
-       if (a(i)%pos(3)>z0) a(i)%pos(3)=a(i)%pos(3)-lohi*(a(i)%pos(3)-z0)
+    do i=1, sys%nat
+     pa=>sys%a(i)%o
+       if (pa%pos(3)>z0) pa%pos(3)=pa%pos(3)-lohi*(pa%pos(3)-z0)
     enddo
 
     zmax=zmax-lohi*(zmax-z0)
@@ -316,48 +336,27 @@ contains
   endsubroutine
 
 
-  function gasdev() !Nro aleat.
-    real(dp)                  :: rsq,v1,v2
-    real(dp), save            :: g
-    real(dp)                  :: gasdev
-    logical, save             :: gaus_stored=.false.
-    if (gaus_stored) then
-      gasdev=g
-      gaus_stored=.false.
-    else
-      do
-        v1=2.0_dp*ran(idum)-1.0_dp
-        v2=2.0_dp*ran(idum)-1.0_dp
-        rsq=v1**2+v2**2
-        if (rsq > 0._dp .and. rsq < 1._dp) exit
-      end do
-      rsq=sqrt(-2.0_dp*log(rsq)/rsq)
-      gasdev=v1*rsq
-      g=v2*rsq
-      gaus_stored=.true.
-    end if
- 
-  end function gasdev
+  subroutine set_sym(a,z) !Asigna tipo a partíc.
+    !integer,intent(in)         :: i
+    character(*),intent(in)    :: z
+    class(atom)                 :: a
 
-  subroutine set_sym(i,z) !Asigna tipo a partíc.
-    integer,intent(in)            :: i
-    character(*),intent(in)       :: z
-
-    if(i>n) then
+    if(i>n) then ! ¿o sys%nat?
       print *, '¡Error! partíc. no existe'
       stop
     endif
 
-    select case(z) !z=a(i)%sym
+    !pa=>sys%a(i) !Lee el i (intent(in)) y lo asigna luego
+    select case(z) !z=símbolo de átomo
     case('Li')
-     a(i)%sym='Li' !Lee el i (intent(in)) y lo asigna
-     a(i)%tipo=1
+     a%sym='Li' 
+     a%tipo=1
     case('CG')
-     a(i)%sym='CG'
-     a(i)%tipo=2
+     a%sym='CG'
+     a%tipo=2
     case('F')
-     a(i)%sym='F'
-     a(i)%tipo=3
+     a%sym='F'
+     a%tipo=3
     case default
 
     end select
@@ -367,61 +366,69 @@ contains
 
 ! Integrac. browniana
 
-subroutine cbrownian(a,h,gama,Tsist)
-type(atom),intent(inout)        :: a(n)
-real(dp),intent(in)     :: h,gama,Tsist !Acá irían dist. gama
-real(dp)                :: fac1,fac2,r1,posold,g
-integer                 :: i,j
+subroutine cbrownian(g,h,gama,Tsist)
+class(group)               :: g
+type(atom), pointer        :: o1 
+type(atom_dclist), pointer :: la 
+real(dp),intent(in)        :: h,gama,Tsist 
+real(dp)                   :: fac1,fac2,r1,posold,ne
+integer                    :: i,j
 
 fac1 = h/gama                     
 fac2 = sqrt(2._dp*kB_ui*Tsist*fac1) 
 
-do i = 1,n
+!Recorre la lista linkeada de átomos
+la => g%alist 
+
+do i = 1,g%nat
+  la => la%next
+  o1 => la%o ! a pointer to a pointer to a (8) 
 
   !Si ya está congelada, ni le calcula una nueva posic ;)
-  if (a(i)%sym=='CG') cycle 
+  if (o1%sym=='CG') cycle 
 
   !Para luego ver congelam. en knock2
-  a(i)%pos_old(:)=a(i)%pos(:)
+  o1%old_cg(:)=o1%pos(:)
 
   do j = 1,3
 
     r1=gasdev()
+    print*, r1
   
-    posold = a(i)%pos(j)
-    a(i)%pos(j) = posold + fac1*a(i)%force(j)/a(i)%m + r1*fac2/sqrt(a(i)%m)
+    posold = o1%pos(j)
+    o1%pos(j) = posold + fac1*o1%force(j)/o1%m + r1*fac2/sqrt(o1%m)
 
     ! Velocidad derivada de euler para atras
-    a(i)%vel(j) = (a(i)%pos(j)-posold)/h
+    o1%vel(j) = (o1%pos(j)-posold)/h
 
     if(j<3) then
       ! PBC en x e y
-      if (a(i)%pos(j)>box(j)) a(i)%pos(j)=a(i)%pos(j)-box(j)
-      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box(j)
+      if (o1%pos(j)>box(j)) o1%pos(j)=o1%pos(j)-box(j)
+      if (o1%pos(j)<o) o1%pos(j)=o1%pos(j)+box(j)
     else 
       !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
       ! Rebote en zmax
-      if(a(i)%pos(j)>zmax) then
-        a(i)%pos(3)=a(i)%pos(3)-2*(a(i)%pos(3)-zmax)
-        a(i)%vel(3)=-a(i)%vel(3)   !También cambio el signo de la componente de la vel. ;)
+      if(o1%pos(j)>zmax) then
+        o1%pos(3)=o1%pos(3)-2*(o1%pos(3)-zmax)
+        o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
       endif
     endif
 
   enddo
  
   ! Si toca el electrodo implicito
-  ! se congela con probabilidad g
-  g=ran(idum)
-  if(a(i)%pos(3)<1._dp) then !No importa si < o <=
-    if(g<prob) then
-      call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
-      a(i)%pos(3)=1._dp
-      call list%addref(a(i))
-      ! a(i)%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
+  ! se congela con probabilidad ne
+  ne=ran(idum)
+  if(o1%pos(3)<1._dp) then !No importa si < o <=
+    if(ne<prob) then
+      call o1%setz('CG') !Le dice que se congele ;) La sub-r. lee el CG-set_sym(o1,'CG')
+      o1%pos(3)=1._dp
+      call list%addref(o1) 
+      ! o1%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
       cycle !Cicla el do más cercano
     else !Acá rechazo el congelamiento y rebota
-      a(i)%pos(3)=a(i)%pos(3)+2*(1._dp-a(i)%pos(3))
-      a(i)%vel(3)=-a(i)%vel(3)   !También cambio el signo de la componente de la vel. ;)
+      o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
+      o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
     endif
   endif
 
@@ -453,42 +460,50 @@ skt=sqrt(kB_ui*Tsist)
 
 endsubroutine
 
-subroutine ermak_a(a,ranv) !Actualiza posic.
+subroutine ermak_a(g,ranv) !Actualiza posic.
 
 ! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263.
-type(atom),intent(inout)        :: a(n)
-real(dp),intent(out)          :: ranv(n,3)                                                              
-real(dp)                      :: r1 ,r2, ranr,g                                                              
-integer                       :: i,j                                                                  
-                                                                                        
-do i = 1,n
+class(group)    :: g
+type(atom_dclist), pointer :: la 
+type(atom), pointer        :: o1 
+real(dp),intent(out)          :: ranv(n,3)
+real(dp)                      :: r1 ,r2, ranr, ne
+integer                       :: i,j
 
-  if (a(i)%sym=='CG') cycle  !Si ya está congelada, ni le calcula una nueva posic ;)
-  a(i)%pos_old(:)=a(i)%pos(:) !Para luego ver congelam.
-                                                                                      
+la => g%alist
+
+do i = 1,g%nat
+  la => la%next
+  o1 => la%o 
+
+  !Si ya está congelada, ni le calcula una nueva posic ;)
+  if (o1%sym=='CG') cycle 
+
+  !Para luego ver congelam.
+  o1%old_cg(:)=o1%pos(:)
+ 
   do j = 1, 3
     r1=gasdev()
-    ranr = skt/sqrt(a(i)%m)*sdr*r1
-    a(i)%pos(j) = a(i)%pos(j) + cc1*a(i)%vel(j) + cc2*h*a(i)%acel(j) + ranr
+    ranr = skt/sqrt(o1%m)*sdr*r1
+    o1%pos(j) = o1%pos(j) + cc1*o1%vel(j) + cc2*h*o1%acel(j) + ranr
 
     !P/ que Li pueda congelarse, o que siga al rebote
-    if (a(i)%sym/='CG')then 
-      if(a(i)%pos(3)<1._dp) then !No importa si < o <=
+    if (o1%sym/='CG')then 
+      if(o1%pos(3)<1._dp) then !No importa si < o <=
     
-         g=ran(idum)
-    
-         if(g<prob) then
-             if(a(i)%sym=='Li') then
-               call set_sym(i,'CG') !Le dice que se congele ;) La sub-r. lee el CG
-               a(i)%pos(3)=1._dp
-               call list%addref(a(i))
+         ne=ran(idum)
+         if(ne<prob) then
+             if(o1%sym=='Li') then
+               call o1%setz('CG') !Le dice que se congele ;) La sub-r. lee el CG-set_sym(o1,'CG')
+               o1%pos(3)=1._dp
+               call list%addref(o1) 
                cycle !Cicla el do más cercano
              endif
 
          else !Acá rechazo el congelamiento y rebota
      
-             a(i)%pos(3)=a(i)%pos(3)+2*(1._dp-a(i)%pos(3))
-             a(i)%vel(3)=-a(i)%vel(3)
+             o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
+             o1%vel(3)=-o1%vel(3)
 
          endif
       endif
@@ -496,22 +511,24 @@ do i = 1,n
 
     ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                      
     r2=gasdev()
-    ranv(i,j) = skt/sqrt(a(i)%m)*sdv*(crv1*r1+crv2*r2)
+    ranv(i,j) = skt/sqrt(o1%m)*sdv*(crv1*r1+crv2*r2)
 
     !Pongo condiciones de caja
     if(j<3) then
-      if (a(i)%pos(j)>box(j)) a(i)%pos(j)=a(i)%pos(j)-box(j)
-      if (a(i)%pos(j)<o) a(i)%pos(j)=a(i)%pos(j)+box(j)
-    else  !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
+      if (o1%pos(j)>box(j)) o1%pos(j)= o1%pos(j)-box(j)
+      if (o1%pos(j)<o) o1%pos(j)= o1%pos(j)+box(j)
+      
+      !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
+    else  
 
-      if(a(i)%pos(j)>zmax) then
-        a(i)%pos(3)=a(i)%pos(3)-2*(a(i)%pos(3)-zmax)
-        a(i)%vel(3)=-a(i)%vel(3)   !También cambio el signo de la componente de la vel. ;)
+      if(o1%pos(j)>zmax) then
+        o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
+        o1%vel(3) = -o1%vel(3)
       endif
 
-      if(a(i)%pos(j)<1._dp) then
-        a(i)%pos(3)=a(i)%pos(3)+2*(1._dp-a(i)%pos(3))
-        a(i)%vel(3)=-a(i)%vel(3)
+      if(o1%pos(j)<1._dp) then
+        o1%pos(3) = o1%pos(3) + 2*(1._dp - o1%pos(3))
+        o1%vel(3) = -o1%vel(3)
       endif
 
     endif
@@ -521,41 +538,55 @@ do i = 1,n
 enddo
                                                                                             
 end subroutine   
-                                                                                            
-subroutine ermak_b(a,ranv)                                                                                 
-type(atom),intent(inout)        :: a(n)
-real(dp),intent(in)          :: ranv(n,3)
-integer                       :: i
 
-! calcula veloc                                                                          
-do i = 1,n
+
+! calcula veloc 
+subroutine ermak_b(g,ranv)
+class(group)               :: g
+type(atom), pointer        :: o1 
+type(atom_dclist), pointer :: la 
+real(dp),intent(in)        :: ranv(n,3)
+integer                    :: i
+
+la => g%alist
+
+do i = 1,g%nat
+  la => la%next
+  o1 => la%o 
  
-  if(a(i)%sym=='CG') cycle !Así se ahorra un cálculo
+  if(o1%sym=='CG') cycle !Así se ahorra un cálculo
 
-  a(i)%vel(:) = cc0*a(i)%vel(:) + (cc1-cc2)*a(i)%acel(:) + cc2*a(i)%force(:)/a(i)%m + ranv(i,:)
-  a(i)%acel(:)=a(i)%force(:)/a(i)%m
+  o1%vel(:) = cc0*o1%vel(:) + (cc1-cc2)*o1%acel(:) + cc2*o1%force(:)/o1%m + ranv(i,:)
+  o1%acel(:)=o1%force(:)/o1%m
 
 enddo
 
 end subroutine
 
 
-subroutine kion(a,temp)
-  type(atom),intent(in)::a(n)
+subroutine kion(g,temp)
+  class(group)    :: g
+  type(atom), pointer        :: o1 
+  type(atom_dclist), pointer :: la
   real(dp),intent(out)::temp
   real(dp)::vd,vdn,vdac !módulo de la vel., y donde acumulo
   integer::i,j
 
-  vdac=0. !acá inicio la cuenta (?)
+  la => g%alist
+
+  vdac=0. !inicia la cuenta
   j=0
 
-  do i=1,n
+  do i=1,g%nat
 
-  if(a(i)%sym=='CG') cycle !No considera Li metálico
+  la => la%next
+  o1 => la%o
+
+  if(o1%sym=='CG') cycle !No considera Li metálico
   j=j+1 !Cuenta los iones en mov.
 
-  vd=dot_product(a(i)%vel(:),a(i)%vel(:))
-  vd=vd*a(i)%m !vel. al cuadrado ;) *porq. |v|=sqrt vd...
+  vd=dot_product(o1%vel(:),o1%vel(:))
+  vd=vd*o1%m !vel. al cuadrado ;) *porq. |v|=sqrt vd...
 
 
   vdn=vdac+vd !acumula m*vel**2
@@ -569,29 +600,38 @@ subroutine kion(a,temp)
 endsubroutine
 
 
-subroutine fuerza(a,eps,r0) ! según LJ
-type(atom),intent(inout) :: a(n) ! esto era intent (in), más lo de abajo. ¿Ahora lo paso
-                                                    ! a intent(inout)?
-!real(dp),intent(out):: a(n)%energy,a(n)%force(3)
+subroutine fuerza(g,eps,r0) ! según LJ
+class(group)    :: g
+type(atom), pointer        :: o1, o2 
+type(atom_dclist), pointer :: la 
 real(dp)            :: vd(3),dr,aux,b,c
 real(dp),intent(in) :: eps(3,3),r0(3,3)
 integer         :: i,j,l,k,m
 
-do i=1, n
-  a(i)%force(:) = 0._dp
+la => g%alist
+
+do i=1, g%nat !n
+  la => la%next
+  o1 => la%o
+  o1%force(:) = 0._dp
+  o1%energy = 0._dp  
+
 enddo
 
-a(:)%energy = 0._dp
 
-do i = 1, n-1
+do i = 1, g%nat-1 
+  la => la%next 
+  o1 => la%o
 
-  k=a(i)%tipo
+  k=o1%tipo
 
-  do j = i+1,n
+  do j = i+1, g%nat
+    la => la%next
+    o2 => la%o
+
+    m=o2%tipo   !Determina esto para luego poder elegir los valores de eps y r0
    
-    m=a(j)%tipo   !Determina esto para luego poder elegir los valores de eps y r0
-   
-    vd(:) = a(i)%pos(:)-a(j)%pos(:)
+    vd(:) = o1%pos(:)-o2%pos(:)
    
     !Armar la caja
     do l=1,2       !Sin contar en z ;)
@@ -604,7 +644,7 @@ do i = 1, n-1
       ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
     enddo
 
-    if(a(j)%sym=='CG'.and.a(i)%sym=='CG') cycle
+    if(o2%sym=='CG'.and.o1%sym=='CG') cycle
 
     dr = dot_product(vd,vd)
 
@@ -621,39 +661,47 @@ do i = 1, n-1
     !derivado el pot de LJ
     aux=c*(b-1)    
 
-    a(i)%force(:)=a(i)%force(:)+aux*vd(:)/dr
-    a(j)%force(:)=a(j)%force(:)-aux*vd(:)/dr
+    o1%force(:)=o1%force(:)+aux*vd(:)/dr
+    o2%force(:)=o2%force(:)-aux*vd(:)/dr
 
     aux = eps(k,m)*b*(b-2)
 
     !el pot de LJ+epsilon
     aux=aux+eps(k,m)  
 
-    a(i)%energy = a(i)%energy + aux*.5_dp
-    a(j)%energy = a(j)%energy + aux*.5_dp
+    o1%energy = o1%energy + aux*.5_dp
+    o2%energy = o2%energy + aux*.5_dp
 
   enddo
 enddo
 
 end subroutine fuerza
 
-subroutine knock(a) !Congela o no
-!real(dp),intent(in)::a(n)%pos_old(3)
-type(atom),intent(inout)::a(n)
-real(dp)::g,vd(3),dr
-integer::i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+!REVISAR
+subroutine knock(g) !Congela o no
+class(group)    :: g
+type(atom), pointer        :: o1, o2
+type(atom_dclist), pointer :: la 
+real(dp):: ne,vd(3),dr
+integer :: i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
 
-do i = 1, n-1
+la => g%alist
 
-  k=a(i)%tipo
+do i = 1, g%nat-1 
+  la => la%next
+  o1 => la%o
 
-  do j = i+1,n
+  k=o1%tipo
 
-    m=a(j)%tipo
+  do j = i+1, g%nat !n
+    la => la%next
+    o2 => la%o
 
-    vd(:) = a(i)%pos(:)-a(j)%pos(:)
+    m=o2%tipo 
 
-     !Pruebo armar la caja
+    vd(:) = o1%pos(:)-o2%pos(:)
+
+     !Armar la caja
      do l=1,2       !Sin contar en z ;)
        if (vd(l)>box(l)*.5_dp) then
        vd(l)=vd(l)-box(l)
@@ -670,18 +718,26 @@ do i = 1, n-1
 
     if(k*m==2) then !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
 
+      ! A continuación, si la posic. vieja del Li+ comparada con la del CG es gde.,
+      ! pasa a decidir si congela.
+      ! Si están "cerca" es probable que en un paso de sim.
+      ! anterior ya haya intentado depositar, y no vuelve a probar
+
       ! Identifica los id del Li y del CG
       if(m==1) then
-         lit=j
-         cng=i
+         ! lit=j !o2. ¿o agrego más punteros? o.ó
+         ! cng=i !o1
+         vd(:)=o2%pos_old(:)-o1%pos(:)  
       else
-         lit=i
-         cng=j
+         ! lit=i !o1
+         ! cng=j !o2
+         vd(:)=o1%pos_old(:)-o2%pos(:)  
       endif
 
-      vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  !Si la posic. vieja del Li comparada con la del CG es gde., pasa a decidir si congela.
+      ! Si la posic. vieja del Li+ comparada con la del CG es gde., pasa a decidir si congela.
+      ! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
 
-      !Pruebo armar la caja
+     !Armar la caja
       do l=1,2       !Sin contar en z ;)
         if (vd(l)>box(l)*.5_dp) then
           vd(l)=vd(l)-box(l)
@@ -696,10 +752,10 @@ do i = 1, n-1
       dr = dot_product(vd,vd)
 
       if(dr>r0(k,m)**2) then
-        g=ran(idum) !nro aleatorio para decidir si congelar o no.
+        ne=ran(idum) !nro aleatorio para decidir si congelar o no.
        
-        if(g<prob) then
-          call set_sym(lit,'CG')
+        if(ne<prob) then
+          call o1%setz('CG') !set_sym(o1,'CG')
           if (a(lit)%pos(3)>z0) stop  !Dentro de la subr. sigue siendo lit ;)
           cycle
         endif
@@ -713,11 +769,11 @@ enddo
 
 endsubroutine
 
-subroutine knock2(a) ! Rebote brusco
-!real(dp),intent(in)::a(n)%pos_old(3)
-type(atom),intent(inout)::a(n)
-real(dp)::g,vd(3),dr
-integer::i,ii,k,j,jj,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
+!REVISAR PRIMERO
+subroutine knock2(list) ! Rebote brusco
+type(ngroup)              :: list
+real(dp)                  :: ne,vd(3),dr
+integer                   :: i,ii,k,j,jj,m,l,ts 
 type(atom),pointer        :: o1,o2
 type(atom_dclist),pointer :: la
  
@@ -726,7 +782,7 @@ type(atom_dclist),pointer :: la
 la => list%ref%alist
 do ii = 1,list%ref%nat
   la => la%next
-  o1 => la%o
+  o1 => la%o ! o1 es el único que puede ser CG
 
   i = o1%gid(list%id)
   k= o1%tipo
@@ -737,6 +793,7 @@ do ii = 1,list%ref%nat
     o2 => list%a(j)%o
 
     m = o2%tipo
+    ! ts = o2%id(jj)
 
     !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
     if(k*m/=2) cycle
@@ -756,21 +813,20 @@ do ii = 1,list%ref%nat
 
     if(dr>r0(k,m)**2) cycle !Sí es necesario :B
 
-    ! Identifica los id del Li y del CG
-    if(m==1) then
-       lit=j
-       cng=i
-    else
-       lit=i
-       cng=j
-    endif
-
-    g=ran(idum) ! nro aleatorio para decidir si congelar o no.
-    if(g<prob) then
-       call set_sym(lit,'F')
+    ne=ran(idum) ! nro aleatorio para decidir si congelar o no.
+    if(ne<prob) then
+       ! if (ts==80) print *, 'la 80 as Li', o2%sym
+       call o2%setz('F') !call set_sym(o2,'F')
 
        ! Terminac. brusca del programa si la dendrita toca el z0
-       if (a(lit)%pos(3)>z0) stop 
+       if (o2%pos(3)>z0) stop ! REVISAR - a(lit) decía
+       ! if (ts==80) then
+       !         print *, 'nueva CG:', o2%pos(:)
+       !         print *, 'su sym', o2%sym
+       !         print *, 'contagiada por:', o1%pos(:)
+       !         print *, 'distancia:', dr
+       !         print *, 'nro aleat:', ne
+       ! endif
 
        cycle
 
@@ -778,7 +834,7 @@ do ii = 1,list%ref%nat
 
       ! Retorno la partícula a la solución
       ! Igual que Mayers
-      a(lit)%pos(:)=a(lit)%pos_old(:)
+      o2%pos(:)= o2%old_cg(:) 
 
     endif
 
@@ -788,14 +844,41 @@ enddo
 
 
 ! Add new CG to the ref group
-do i = 1,n
-  if (a(i)%sym/='F') cycle
-  call a(i)%setz('CG')
-  call list%addref(a(i))
+la=> list%b%alist
+do i = 1, list%b%nat
+  la=> la%next
+  o1=> la%o
+  if (o1%sym/='F') cycle
+  ! if (i==80) print *, '80 es:', o1%sym
+  call o1%setz('CG')
+  ! if (i==80) print *, '80 renombrada:', o1%sym
+  call list%addref(o1)
 enddo
 
 endsubroutine
 
+function gasdev() !Nro aleat.
+  real(dp)                  :: rsq,v1,v2
+  real(dp), save            :: g
+  real(dp)                  :: gasdev
+  logical, save             :: gaus_stored=.false.
+  if (gaus_stored) then
+    gasdev=g
+    gaus_stored=.false.
+  else
+    do
+      v1=2.0_dp*ran(idum)-1.0_dp
+      v2=2.0_dp*ran(idum)-1.0_dp
+      rsq=v1**2+v2**2
+      if (rsq > 0._dp .and. rsq < 1._dp) exit
+    end do
+    rsq=sqrt(-2.0_dp*log(rsq)/rsq)
+    gasdev=v1*rsq
+    g=v2*rsq
+    gaus_stored=.true.
+  end if
+
+end function gasdev
  
 function ran(idum)
 implicit none

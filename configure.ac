@@ -3,7 +3,7 @@
 
 AC_INIT([dana],
     [m4_esyscmd_s([git describe --always --abbrev=4 --dirty])],
-    [pauvs@gmail.com])
+    [pauvsaravia@mi.unc.edu.ar])
 
 AC_CONFIG_SRCDIR(.)
 
