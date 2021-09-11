@@ -64,7 +64,7 @@ type, public :: atom
 
   !para ver el desplazamiento en la lista de vecinos. Esto lo establezco bien
   !grande para forzar la primera actualizacion del verlet
-  real(dp),dimension(dm) :: pos_old =1.e8_dp
+  real(dp),dimension(dm) :: pos_old =1.e8_dp, old_cg = 1.e8_dp
 
   real(dp)               :: energy=0.d0
          

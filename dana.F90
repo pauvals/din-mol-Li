@@ -7,8 +7,8 @@ program din_mol_Li
   integer,parameter     :: dp=8
  
   !Cosas del sistema  #what a quilombo
-  integer               :: n, nx                !Nro de particulas
-  real(dp), parameter   :: o=0._dp, tau=0.1_dp  !Largo de la caja, tau p/ rho
+  integer               :: n, nx                ! Nro de particulas
+  real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Largo de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
@@ -192,7 +192,6 @@ program din_mol_Li
 
   call salida() !Para que escriba la config. inic. en el primer paso ;)
 
-
   do i=1,nst
 
     box(3)=zmax
@@ -272,7 +271,6 @@ contains
     ! Coords. de partíc.
     write(11,*) sys%nat ! n
     write(11,*)
-   
     do j =1, sys%nat
      pa=>sys%a(j)%o
      write(11,*) pa%sym,pa%pos(:),pa%tipo
@@ -393,7 +391,6 @@ do i = 1,g%nat
   do j = 1,3
 
     r1=gasdev()
-    print*, r1
   
     posold = o1%pos(j)
     o1%pos(j) = posold + fac1*o1%force(j)/o1%m + r1*fac2/sqrt(o1%m)
@@ -492,6 +489,7 @@ do i = 1,g%nat
       if(o1%pos(3)<1._dp) then !No importa si < o <=
     
          ne=ran(idum)
+         write (15,*) 'llamada a ran ermak a'
          if(ne<prob) then
              if(o1%sym=='Li') then
                call o1%setz('CG') !Le dice que se congele ;) La sub-r. lee el CG-set_sym(o1,'CG')
@@ -677,7 +675,6 @@ enddo
 
 end subroutine fuerza
 
-!REVISAR
 subroutine knock(g) !Congela o no
 class(group)    :: g
 type(atom), pointer        :: o1, o2
@@ -718,23 +715,17 @@ do i = 1, g%nat-1
 
     if(k*m==2) then !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
 
+      ! Identifica los id del Li y del CG
+      if(m==1) then
+         vd(:)=o2%pos_old(:)-o1%pos(:)  
+      else
+         vd(:)=o1%pos_old(:)-o2%pos(:)  
+      endif
+
       ! A continuación, si la posic. vieja del Li+ comparada con la del CG es gde.,
       ! pasa a decidir si congela.
       ! Si están "cerca" es probable que en un paso de sim.
       ! anterior ya haya intentado depositar, y no vuelve a probar
-
-      ! Identifica los id del Li y del CG
-      if(m==1) then
-         ! lit=j !o2. ¿o agrego más punteros? o.ó
-         ! cng=i !o1
-         vd(:)=o2%pos_old(:)-o1%pos(:)  
-      else
-         ! lit=i !o1
-         ! cng=j !o2
-         vd(:)=o1%pos_old(:)-o2%pos(:)  
-      endif
-
-      ! Si la posic. vieja del Li+ comparada con la del CG es gde., pasa a decidir si congela.
       ! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
 
      !Armar la caja
@@ -769,11 +760,10 @@ enddo
 
 endsubroutine
 
-!REVISAR PRIMERO
 subroutine knock2(list) ! Rebote brusco
 type(ngroup)              :: list
 real(dp)                  :: ne,vd(3),dr
-integer                   :: i,ii,k,j,jj,m,l,ts 
+integer                   :: i,ii,k,j,jj,m,l,ts,tp 
 type(atom),pointer        :: o1,o2
 type(atom_dclist),pointer :: la
  
@@ -786,6 +776,7 @@ do ii = 1,list%ref%nat
 
   i = o1%gid(list%id)
   k= o1%tipo
+  tp = o1%id(ii)
 
   do jj = 1, list%nn(i)  ! sobre los vecinos
 
@@ -793,7 +784,7 @@ do ii = 1,list%ref%nat
     o2 => list%a(j)%o
 
     m = o2%tipo
-    ! ts = o2%id(jj)
+    ts = o2%id(jj)
 
     !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
     if(k*m/=2) cycle
@@ -815,20 +806,11 @@ do ii = 1,list%ref%nat
 
     ne=ran(idum) ! nro aleatorio para decidir si congelar o no.
     if(ne<prob) then
-       ! if (ts==80) print *, 'la 80 as Li', o2%sym
        call o2%setz('F') !call set_sym(o2,'F')
 
        ! Terminac. brusca del programa si la dendrita toca el z0
-       if (o2%pos(3)>z0) stop ! REVISAR - a(lit) decía
-       ! if (ts==80) then
-       !         print *, 'nueva CG:', o2%pos(:)
-       !         print *, 'su sym', o2%sym
-       !         print *, 'contagiada por:', o1%pos(:)
-       !         print *, 'distancia:', dr
-       !         print *, 'nro aleat:', ne
-       ! endif
-
-       cycle
+       if (o2%pos(3)>z0) stop 
+       exit
 
     else
 
@@ -849,9 +831,7 @@ do i = 1, list%b%nat
   la=> la%next
   o1=> la%o
   if (o1%sym/='F') cycle
-  ! if (i==80) print *, '80 es:', o1%sym
   call o1%setz('CG')
-  ! if (i==80) print *, '80 renombrada:', o1%sym
   call list%addref(o1)
 enddo
 
@@ -870,7 +850,9 @@ function gasdev() !Nro aleat.
       v1=2.0_dp*ran(idum)-1.0_dp
       v2=2.0_dp*ran(idum)-1.0_dp
       rsq=v1**2+v2**2
-      if (rsq > 0._dp .and. rsq < 1._dp) exit
+      if (rsq > 0._dp .and. rsq < 1._dp) then
+             exit
+      end if
     end do
     rsq=sqrt(-2.0_dp*log(rsq)/rsq)
     gasdev=v1*rsq
