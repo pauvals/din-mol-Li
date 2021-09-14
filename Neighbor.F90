@@ -31,7 +31,7 @@ module gems_neighbor
 ! not the atoms of the neighbor group.
 
 use gems_groups
-use gems_constants,     only: dp,cdm,dm
+use gems_constants,     only: dp,cdm,dm,ui_ev
 use gems_errors
 ! use gems_algebra
 
@@ -42,7 +42,19 @@ public  :: update, test_update
 
 logical :: mic=.true.
 
+! Groups for selection
 type(group),target,public    :: ghost
+ 
+! From 1 to 13 are the upper cells. From 14 to 26 the lower. 0 is the center
+integer,parameter :: map(3,0:26) = &
+         reshape( [ 0, 0, 0,  &
+                    1, 0, 0,   1, 1, 0,   0, 1, 0,  -1, 1, 0,&
+                    1, 0,-1,   1, 1,-1,   0, 1,-1,  -1, 1,-1,&
+                    1, 0, 1,   1, 1, 1,   0, 1, 1,  -1, 1, 1,&
+                    0, 0, 1,  -1, 0, 0,  -1,-1, 0,   0,-1, 0,&
+                    1,-1, 0,  -1, 0, 1,  -1,-1, 1,   0,-1, 1,&
+                    1,-1, 1,  -1, 0,-1,  -1,-1,-1,   0,-1,-1,&
+                    1,-1,-1,   0, 0,-1],[3,27])
 
 ! System/Local atoms, index to allow reference by `tag`.
 type(igroup),target,public  :: sys
@@ -62,19 +74,9 @@ integer,parameter,public,dimension(26,3) :: n1cells = transpose(reshape( &
                      1, 0,-1, -1, 0,-1,  0, 1,-1,&
                      1, 1,-1, -1, 1,-1,  0,-1,-1,&
                      1,-1,-1, -1,-1,-1 ],[3,26]))
-! integer,public,dimension(26,3) :: n1test = 0.5_dp*(sign(n1cells(:,:))+1)-abs(n1cells(:,:))
-                                              
-! From 1 to 13 are the upper cells. From 14 to 26 the lower. 0 is the center
-integer,parameter :: map(3,0:26) = &
-         reshape( [ 0, 0, 0,  &
-                    1, 0, 0,   1, 1, 0,   0, 1, 0,  -1, 1, 0,&
-                    1, 0,-1,   1, 1,-1,   0, 1,-1,  -1, 1,-1,&
-                    1, 0, 1,   1, 1, 1,   0, 1, 1,  -1, 1, 1,&
-                    0, 0, 1,  -1, 0, 0,  -1,-1, 0,   0,-1, 0,&
-                    1,-1, 0,  -1, 0, 1,  -1,-1, 1,   0,-1, 1,&
-                    1,-1, 1,  -1, 0,-1,  -1,-1,-1,   0,-1,-1,&
-                    1,-1,-1,   0, 0,-1],[3,27])
 
+! integer,public,dimension(26,3) :: n1test = 0.5_dp*(sign(n1cells(:,:))+1)-abs(n1cells(:,:))
+ 
 ! Group split in cells
 type, extends(igroup), public :: cgroup
 
@@ -105,9 +107,13 @@ type, extends(igroup), public :: cgroup
   procedure(cgroup_first),pointer :: update => cgroup_first
 
   contains
-
+  
+    ! Parent procedures that set a polymorphic pointer to an extension
+    ! (see group type construct).
+    procedure :: cgroup_attach_atom 
+   
     procedure :: dest => cgroup_destroy
-    procedure :: grow => cgroup_grow
+    procedure :: attach_atom => cgroup_attach_atom
 
     procedure :: setrc => cgroup_setrc
     procedure :: sort => cgroup_sort
@@ -147,18 +153,21 @@ type, extends(igroup), public :: ngroup
   procedure(ngroup_cells_atom),pointer :: lista_atom=>ngroup_cells_atom
 
   contains
-
+  
+    ! Parent procedures that set a polymorphic pointer to an extension
+    ! (see group type construct).
+    procedure :: ngroup_construct   
+    procedure :: ngroup_attach_atom 
+   
     procedure :: init => ngroup_construct
     procedure :: dest => ngroup_destroy
-    procedure :: grow => ngroup_grow
-    
+    procedure :: attach_atom => ngroup_attach_atom
     procedure :: addref => ngroup_addref
 
     ! Keep access to procedures of abstract parent
     ! see (https://fortran-lang.discourse.group/t/call-overridden-procedure-of-abstract-parent-type/590/23)
-    procedure :: init_abstract => ngroup_construct
-    procedure :: dest_abstract => ngroup_destroy
-    procedure :: grow_abstract => ngroup_grow
+    procedure :: ngroup_init => ngroup_construct
+    procedure :: ngroup_dest => ngroup_destroy  
 
     procedure :: setrc => ngroup_setrc
 
@@ -215,18 +224,26 @@ contains
 ! =============
 
 subroutine cgroup_destroy(g)
-class(cgroup)         :: g
+class(cgroup),target         :: g
 call g%igroup%dest()
 if(allocated(g%head)) deallocate(g%head)
 if(allocated(g%next)) deallocate(g%next)
 end subroutine cgroup_destroy
 
-subroutine cgroup_grow(g)
-class(cgroup)         :: g
+subroutine cgroup_attach_atom(g,a)
+class(cgroup),target  :: g
+class(atom),target    :: a
 integer               :: n
 
-call g%igroup%grow()
-
+! Save current atom number
+n=g%nat
+ 
+! Attempt to attach
+call g%igroup_attach_atom(a)
+ 
+! Return if atom was already in the group
+if(n==g%nat) return
+                             
 if(allocated(g%next)) then
   if(g%nat<size(g%next)) return
   deallocate(g%next)
@@ -235,7 +252,7 @@ endif
 n=g%nat+g%pad
 allocate(g%next(n))
 
-end subroutine cgroup_grow
+end subroutine cgroup_attach_atom
 
 ! Set properties
 ! --------------
@@ -430,7 +447,7 @@ subroutine ngroup_construct(g)
 class (ngroup),target             :: g
 
 ! Initialize
-call g%igroup%init()
+call g%igroup_construct()
 
 ! Ghost atoms must have its own index in order to comunicate back 
 ! to the real image the computed properties
@@ -445,11 +462,15 @@ call g%ref%init()
 call g%b%init()
 g%b%ghost=.true.
 
+! Allocate
+allocate(g%nn(g%pad))
+allocate(g%list(g%pad,g%mnb))
+
 end subroutine ngroup_construct
 
 subroutine ngroup_destroy(g)
-class (ngroup)  :: g
-integer         :: i
+class (ngroup),target  :: g
+integer                :: i
 
 ! Update ngindex of `g`
 do i=1,ngindex%size
@@ -462,31 +483,36 @@ call g%ref%dest()
 call g%b%dest()
 
 ! Destroy
-call g%dest()
+call g%igroup%dest()
 deallocate(g%nn)
 deallocate(g%list)
 
 end subroutine ngroup_destroy
 
-subroutine ngroup_grow(g)
-class(ngroup)          :: g
+subroutine ngroup_attach_atom(g,a)
+class(ngroup),target   :: g
+class(atom),target     :: a
 integer                :: n
 
-call g%igroup%grow()
+! Save current atom number
+n=g%nat
 
+call g%igroup_attach_atom(a)
+ 
+! Return if atom was already in the group
+if(n==g%nat) return
+ 
 ! TODO Check if neighbor list is needed
 
-if(allocated(g%nn)) then
-  if(g%nat<size(g%nn)) return
-  deallocate(g%nn)
-  deallocate(g%list)
-endif
+if(g%nat<size(g%nn)) return
 
+deallocate(g%nn)
+deallocate(g%list)
 n=g%nat+g%pad
 allocate(g%nn(n))
 allocate(g%list(n,g%mnb))
 
-end subroutine ngroup_grow
+end subroutine ngroup_attach_atom
 
 ! Set properties
 ! --------------
@@ -532,7 +558,7 @@ call g%ref%attach(a)
 if(.not.associated(g%lista)) return
 
 ! Complete the neighboor list
-call g%lista_atom(a%gid(g%id))
+call g%lista_atom(a%gid(g))
 
 end subroutine ngroup_addref
 
@@ -562,13 +588,16 @@ rcut=rcut*rcut
 ! do j = i+1,g%na+g%nag
 !   vd = g%at(j)%o%pos-g%at(i)%o%pos
 
+!OMP: Creo varios threads
 !$OMP PARALLEL
+
+!OMP: Un thread ejecuta, los demas quedan idle.
 !$OMP SINGLE
 la => g%ref%alist
 do ii = 1,g%ref%nat
   la => la%next
   ai => la%o
-  i = ai%gid(g%id)
+  i = ai%gid(g)
 
   !OMP: Se reparte la tarea entre los idle threads
   !$OMP TASK DEFAULT(NONE)     &
@@ -580,7 +609,7 @@ do ii = 1,g%ref%nat
   m=0
 
   do j = 1, g%b%nat
-    aj=>g%b%a(j)%o
+    aj => g%b%a(j)%o
 
     ! Skip autointeraction
     if(associated(aj,target=ai)) cycle
@@ -592,7 +621,7 @@ do ii = 1,g%ref%nat
 
     ! Add j as neighbor of i.
     m=m+1
-    g%list(i,m)=aj%gid(g%id)
+    g%list(i,m)=aj%gid(g)
 
   enddo
   g%nn(i)=m
@@ -637,7 +666,7 @@ do j = 1, g%b%nat
 
   ! Add j as neighbor of i.
   m=m+1
-  g%list(i,m)=aj%gid(g%id)
+  g%list(i,m)=aj%gid(g)
 
 enddo
 g%nn(i)=m
@@ -665,9 +694,8 @@ rcut=rcut*rcut
 ! Sort in cells
 call g%b%sort()
 
-la => g%ref%alist
-
 !Bucle sobre los atomos de g
+la => g%ref%alist
 !$OMP PARALLEL
 !$OMP SINGLE 
 do ii = 1,g%ref%nat
@@ -678,8 +706,8 @@ do ii = 1,g%ref%nat
   !$OMP& FIRSTPRIVATE(ai)              &
   !$OMP& SHARED(g,rcut,mic)            &
   !$OMP& PRIVATE(rc,i,nabor,nc,j,aj,k,vd,rd)   
-
-  i = ai%gid(g%id)
+ 
+  i = ai%gid(g)
 
   ! Get cell index
   rc(:)=int(ai%pos(:)/g%b%cell(:))+1
@@ -695,7 +723,7 @@ do ii = 1,g%ref%nat
     j = g%b%head(nc(1),nc(2),nc(3))
     do while( j>0 )
       aj=>g%b%a(j)%o
-      k = aj%gid(g%id)
+      k = aj%gid(g)
 
       ! Next here to allow cycle
       j = g%b%next(j)
@@ -721,7 +749,7 @@ enddo
 
 !$OMP END SINGLE NOWAIT
 !$OMP END PARALLEL
-
+ 
 
 end subroutine ngroup_cells
 
@@ -759,7 +787,7 @@ do nabor=0,26
   j = g%b%head(nc(1),nc(2),nc(3))
   do while( j>0 )
     aj=>g%b%a(j)%o
-    k = aj%gid(g%id)
+    k = aj%gid(g)
 
     ! Next here to allow cycle
     j = g%b%next(j)
@@ -1019,14 +1047,12 @@ call ghost%attach(o)
 ! Assign image properties
 o%ghost=>o2
 call atom_asign(o,o2)
-o%id(:)=o2%id(:)
 o%pos(:)=o2%pos(:)+r(:)*box(:)
 o%boxcr(:)=r(:)
 
 ! Add ghost to the image ngroups
 do j=1,o2%ngr
-  i = o2%gr(j)
-  g => gindex%o(i)%o
+  g => o2%gr(j)%o
   if(g%ghost) call g%attach(o)
 enddo
 
@@ -1122,7 +1148,7 @@ subroutine pbcghost()
 ! pbcfullghost.
 use gems_groups, only: atom_dclist
 real(dp)                   :: rcut,r(dm),rold(dm)
-type(atom), pointer        :: o,o2
+type(atom), pointer        :: o, o2
 type(atom_dclist), pointer :: la
 integer                    :: i,j,m
 logical                    :: updatebcr
@@ -1138,9 +1164,11 @@ do i = 1,ghost%nat
   la => la%next
   o => la%o
 
+
   ! Leaved box+rcut, not a ghost any more
   if(.not.isghost(o%pos,rcut)) then
-    call o%dest()
+    call ghost%detach_link(la)
+    if(o%try_dest()) deallocate(o)
     cycle
   endif
 
@@ -1169,28 +1197,28 @@ do i = 1,ghost%nat
   endif
 
 enddo
-
+ 
 ! Find new ghosts
-! !$OMP PARALLEL DO PRIVATE(m,i,j,la,o,k,o2,g,r,rold)
+! !$OMP PARALLEL DO PRIVATE(m,i,j,la,o,k,o,g,r,rold)
 do m =1,26
 
   do i = 1,sys%nat
-    o2 => sys%a(i)%o
+    o => sys%a(i)%o
 
     ! Image position..
     ! TODO: it would be easy to check proximity to the border?
-    r(:)=o2%pos(:)+n1cells(m,:)*box(:)
+    r(:)=o%pos(:)+n1cells(m,:)*box(:)
 
     ! if (.not.all(la%o%pbc(:)*n1cells(m,:))) cycle
 
     if (isghost(r(:),rcut)) then
 
       ! Check if this was a ghost before
-      rold(:)=o2%pos_old(:)+n1cells(m,:)*box_old(:)
+      rold(:)=o%pos_old(:)+n1cells(m,:)*box_old(:)
       if (.not.isoldghost(rold(:),rcut)) then
 
         ! !$OMP CRITICAL
-        call new_ghost(o2,n1cells(m,:))
+        call new_ghost(o,n1cells(m,:))
         ! !$OMP END CRITICAL
 
       endif
@@ -1286,7 +1314,7 @@ rcut=maxrcut+nb_dcut
 
 ! Destroy all ghost atoms
 ! FIXME: avoid this deallocate.
-call ghost%destroy_all()
+call ghost%try_destroy_all()
 
 ! Make local atoms pbc
 call do_pbc(sys)

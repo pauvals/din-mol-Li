@@ -774,7 +774,7 @@ do ii = 1,list%ref%nat
   la => la%next
   o1 => la%o ! o1 es el único que puede ser CG
 
-  i = o1%gid(list%id)
+  i = o1%gid(list)
   k= o1%tipo
   tp = o1%id(ii)
 
