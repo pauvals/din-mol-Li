@@ -24,7 +24,6 @@ program din_mol_Li
   ! Variables dinámicas, agrupadas en átomo
   type(atom), allocatable, target :: a(:) ! átomo
   type(atom), pointer             :: pa=>null(), pb=>null()
-  type(group)         :: chunk
   real(dp)            :: prob
 
   ! Parametros de integración
@@ -48,17 +47,44 @@ program din_mol_Li
   real(dp)            :: crv1,crv2
   ! real(dp)            :: ranv(n,3),a(n)%acel(3) !de usar esto también hay que hacer allocatable
 
-  ! Group used to compute neighbors list
-  type(ngroup)        :: list
+  ! Grupos varios
+  type(group)         :: chunk
 
-  ! Init groups
+  ! Group used to compute neighbors list
+  type(ngroup)        :: list, hs
+  
+  ! Valores de epsilon y r0 :P
+  eps(:,2) = 0
+  r0(:,2)  = 0
+  eps(2,:) = 0
+  r0(2,:)  = 0
+  r0(2,1)  = 3.5_dp
+  r0(1,2)  = 3.5_dp
+  eps(1,1) = 2313.6_dp
+  r0(1,1)  = 3.5_dp
+  eps(3,3) = 121._dp
+  r0(3,3)  = 3.61_dp
+  eps(1,3) = 529.1_dp
+  eps(3,1) = eps(1,3)
+  r0(1,3)  = 1.564_dp
+  r0(3,1)  = r0(1,3)
+      
+  ! Init general del sistema de grupos
   call gindex%init()
   call ngindex%init()
-  call list%init()
   call sys%init()
-  call chunk%init()
-  call list%setrc(3.61_dp)
 
+  ! Init lista para knock2
+  call list%init()
+  call list%setrc(r0(2,1))
+ 
+  ! Init lista para choques de esferas duras
+  call hs%init()
+  call hs%setrc(r0(1,1))
+ 
+  ! Grupo chunk
+  call chunk%init()
+ 
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
   close(25)
@@ -96,13 +122,22 @@ program din_mol_Li
     ! Attach atom to the system
     call sys%attach(pa)
 
+    ! Agrego atomos a los grupos 
     call list%attach(pa)
     if (pa%sym=='CG') then
-      ! Only attach CG to ref group
       call list%ref%attach(pa)
+
+      ! TODO:
+      ! - comentar knock2, eliminar list
+      ! - ageregar los CG a hs%b
+      ! call hs%b%attach(pa) ! <<<<<<<<<<<<<<<<<
+      ! - Modificar hs para que elija congelar los CG o chocar los Li
     else
-      ! No CG atom in b group
       call list%b%attach(pa)
+
+      call hs%attach(pa)
+      call hs%ref%attach(pa)
+      call hs%b%attach(pa)
     endif
 
     ! Set pbc
@@ -145,22 +180,6 @@ program din_mol_Li
   enddo
   nx = k !guardo el valor de k
 
-  ! Valores de epsilon y r0 :P
-  eps(:,2) = 0
-  r0(:,2)  = 0
-  eps(2,:) = 0
-  r0(2,:)  = 0
-  r0(2,1)  = 3.5_dp
-  r0(1,2)  = 3.5_dp
-  eps(1,1) = 2313.6_dp
-  r0(1,1)  = 3.2_dp
-  eps(3,3) = 121._dp
-  r0(3,3)  = 3.61_dp
-  eps(1,3) = 529.1_dp
-  eps(3,1) = eps(1,3)
-  r0(1,3)  = 1.564_dp
-  r0(3,1)  = r0(1,3)
-
   ! Calculo la velocidad neta del sistema
   ! Sino se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
   ! internas ;)
@@ -200,12 +219,14 @@ program din_mol_Li
     ! call ermak_a(a,ranv) ! revisar declaración de ranv
     ! call fuerza(a,r0)
     ! call ermak_b(a,ranv)
-    call cbrownian(sys,h,gama,Tsist)
+    ! call cbrownian(sys,h,gama,Tsist)
 
+    call cbrownian_hs(hs,h,gama,Tsist)
+ 
     ! call test_update()
     call update()
-
-    !Ve si congela o no
+                          
+    !Ve si congela o rebota
     call knock2(list)          
 
     ! Ajuste de tamaño, y cant. de partículas en reservorio
@@ -428,6 +449,95 @@ do i = 1,g%nat
       o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
     endif
   endif
+
+enddo
+
+end subroutine
+
+subroutine cbrownian_hs(g,h,gama,Tsist)
+class(ngroup)              :: g
+type(atom), pointer        :: o1 
+type(atom_dclist), pointer :: la 
+real(dp),intent(in)        :: h,gama,Tsist 
+real(dp)                   :: fac1,fac2,r1,posold,ne
+integer                    :: i,j,ii,jj
+
+fac1 = h/gama                     
+fac2 = sqrt(2._dp*kB_ui*Tsist*fac1) 
+
+la => g%ref%alist
+do ii = 1,g%ref%nat
+  la => la%next
+  o1 => la%o ! o1 es el único que puede ser CG
+
+  !Para luego ver congelam. en knock2
+  o1%old_cg(:)=o1%pos(:)
+
+  do j = 1,3
+
+    r1=gasdev()
+  
+    posold = o1%pos(j)
+    o1%pos(j) = posold + fac1*o1%force(j)/o1%m + r1*fac2/sqrt(o1%m)
+
+    ! Velocidad derivada de euler para atras
+    o1%vel(j) = (o1%pos(j)-posold)/h
+
+    if(j<3) then
+      ! PBC en x e y
+      if (o1%pos(j)>box(j)) o1%pos(j)=o1%pos(j)-box(j)
+      if (o1%pos(j)<o) o1%pos(j)=o1%pos(j)+box(j)
+    else 
+      !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
+      ! Rebote en zmax
+      if(o1%pos(j)>zmax) then
+        o1%pos(3)=o1%pos(3)-2*(o1%pos(3)-zmax)
+        o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
+      endif
+    endif
+
+  enddo
+ 
+  ! Si toca el electrodo implicito
+  ! se congela con probabilidad ne
+  ne=ran(idum)
+  if(o1%pos(3)<1._dp) then !No importa si < o <=
+    if(ne<prob) then
+      call o1%setz('CG') !Le dice que se congele ;) La sub-r. lee el CG-set_sym(o1,'CG')
+      o1%pos(3)=1._dp
+      call list%addref(o1) 
+      ! o1%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
+    else !Acá rechazo el congelamiento y rebota
+      ! o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
+      ! o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
+      o1%pos(:)= o1%old_cg(:) 
+    endif
+
+    cycle
+  endif
+
+
+  ! Choque con las demas particulas
+  i = o1%gid(g)
+  do jj = 1, g%nn(i)  ! sobre los vecinos
+
+    j = g%g(i,jj)
+    o2 => g%a(j)%o
+    
+    ! TODO: if(CG? veo si congelo o no
+    !
+    ! TODO: if(Li veo si chocho
+
+    vd(:) = vdistance(o1,o2,.true.)
+    dr = dot_product(vd,vd)
+
+    if(dr>g%rcut2) cycle !Sí es necesario :B
+    
+    o1%pos(:)= o1%old_cg(:) 
+    exit
+
+  enddo
+
 
 enddo
 
@@ -763,7 +873,7 @@ endsubroutine
 subroutine knock2(list) ! Rebote brusco
 type(ngroup)              :: list
 real(dp)                  :: ne,vd(3),dr
-integer                   :: i,ii,k,j,jj,m,l,ts,tp 
+integer                   :: i,ii,j,jj,l,ts,tp 
 type(atom),pointer        :: o1,o2
 type(atom_dclist),pointer :: la
  
@@ -775,19 +885,14 @@ do ii = 1,list%ref%nat
   o1 => la%o ! o1 es el único que puede ser CG
 
   i = o1%gid(list)
-  k= o1%tipo
-  tp = o1%id(ii)
+  ! tp = o1%gid(sys)
 
   do jj = 1, list%nn(i)  ! sobre los vecinos
 
     j = list%list(i,jj)
     o2 => list%a(j)%o
 
-    m = o2%tipo
     ts = o2%id(jj)
-
-    !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
-    if(k*m/=2) cycle
 
     vd(:) = o1%pos(:)-o2%pos(:)
 
@@ -802,7 +907,7 @@ do ii = 1,list%ref%nat
 
     dr = dot_product(vd,vd)
 
-    if(dr>r0(k,m)**2) cycle !Sí es necesario :B
+    if(dr>list%rcut2) cycle !Sí es necesario :B
 
     ne=ran(idum) ! nro aleatorio para decidir si congelar o no.
     if(ne<prob) then
@@ -833,6 +938,56 @@ do i = 1, list%b%nat
   if (o1%sym/='F') cycle
   call o1%setz('CG')
   call list%addref(o1)
+enddo
+
+endsubroutine
+
+subroutine hspheres(list) ! Rebote brusco en solucion
+type(ngroup)              :: list
+real(dp)                  :: ne,vd(3),dr
+integer                   :: i,ii,k,j,jj,m,l,ts,tp 
+type(atom),pointer        :: o1,o2
+type(atom_dclist),pointer :: la
+ 
+! Por todos los pares de particulas
+
+la => list%ref%alist
+do ii = 1,list%ref%nat
+  la => la%next
+  o1 => la%o ! o1 es el único que puede ser CG
+
+  i = o1%gid(list)
+  k= o1%tipo
+  tp = o1%id(ii)
+
+  do jj = 1, list%nn(i)  ! sobre los vecinos
+
+    j = list%list(i,jj)
+    o2 => list%a(j)%o
+
+    m = o2%tipo
+    ts = o2%id(jj)
+
+    vd(:) = o1%pos(:)-o2%pos(:)
+
+    !Condicion de imagen minima
+    do l=1,2       !Sin contar en z ;)
+       if (vd(l)>box(l)*.5_dp) then
+         vd(l)=vd(l)-box(l)
+       else if (vd(l)<-box(l)*.5_dp) then
+         vd(l)=vd(l)+box(l)
+       endif
+    enddo
+
+    dr = dot_product(vd,vd)
+
+    if(dr>list%rcut2) cycle !Sí es necesario :B
+
+    ! Retorno la partícula a la solución
+    o2%pos(:)= o2%old_cg(:) 
+
+  enddo
+
 enddo
 
 endsubroutine

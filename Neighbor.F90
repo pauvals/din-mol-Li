@@ -38,7 +38,7 @@ use gems_errors
 implicit none
 private
 
-public  :: update, test_update
+public  :: update, test_update, vdistance
 
 logical :: mic=.true.
 
