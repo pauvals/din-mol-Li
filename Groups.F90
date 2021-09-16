@@ -669,7 +669,7 @@ class(group)               :: g
 type(atom_dclist), pointer :: la,next
 
 ! Circulo por la lista hasta que la vacio
-la => g%alist
+la => g%alist%next
 do while(g%nat/=0)
   next => la%next
     
@@ -684,6 +684,7 @@ do while(g%nat/=0)
   ! Deattach the link from the group
   call la%deattach()
   deallocate(la)
+  g%nat = g%nat - 1
 
   la=>next
 enddo
