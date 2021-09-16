@@ -74,7 +74,7 @@ program din_mol_Li
   call ngindex%init()
   call sys%init()
 
-  ! Init lista para knock2
+  ! Init lista para knock
   call list%init()
   call list%setrc(r0(2,1))
  
@@ -128,9 +128,9 @@ program din_mol_Li
       call list%ref%attach(pa)
 
       ! TODO:
-      ! - comentar knock2, eliminar list
+      ! - comentar knock, eliminar list
       ! - ageregar los CG a hs%b
-      ! call hs%b%attach(pa) ! <<<<<<<<<<<<<<<<<
+      ! call hs%b%attach(pa) ! <<<<<<<<<<<<<<<<< ¿Diferencia con la línea más abajo?
       ! - Modificar hs para que elija congelar los CG o chocar los Li
     else
       call list%b%attach(pa)
@@ -184,7 +184,7 @@ program din_mol_Li
   ! Sino se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
   ! internas ;)
   do k=1,sys%nat 
-    vm(:)= sum(sys%a(k)%o%pos(:) - sys%a(k)%o%pos_old(:)) /n
+    vm(:)= sum(sys%a(k)%o%pos(:) - sys%a(k)%o%pos_old(:))/n
   enddo
 
   ! Sustraer la velocidad neta
@@ -227,7 +227,7 @@ program din_mol_Li
     call update()
                           
     !Ve si congela o rebota
-    call knock2(list)          
+    call knock(list)          
 
     ! Ajuste de tamaño, y cant. de partículas en reservorio
     call set_rho(rho)
@@ -406,7 +406,7 @@ do i = 1,g%nat
   !Si ya está congelada, ni le calcula una nueva posic ;)
   if (o1%sym=='CG') cycle 
 
-  !Para luego ver congelam. en knock2
+  !Para luego ver congelam. en knock
   o1%old_cg(:)=o1%pos(:)
 
   do j = 1,3
@@ -470,7 +470,7 @@ do ii = 1,g%ref%nat
   la => la%next
   o1 => la%o ! o1 es el único que puede ser CG
 
-  !Para luego ver congelam. en knock2
+  !Para luego ver congelam. en knock
   o1%old_cg(:)=o1%pos(:)
 
   do j = 1,3
@@ -503,13 +503,14 @@ do ii = 1,g%ref%nat
   ne=ran(idum)
   if(o1%pos(3)<1._dp) then !No importa si < o <=
     if(ne<prob) then
-      call o1%setz('CG') !Le dice que se congele ;) La sub-r. lee el CG-set_sym(o1,'CG')
+      call o1%setz('CG') !Le dice que se congele ;)
       o1%pos(3)=1._dp
       call list%addref(o1) 
       ! o1%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
     else !Acá rechazo el congelamiento y rebota
-      ! o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
       ! o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
+
+      ! Devuelve la partíc. a su posic. anterior
       o1%pos(:)= o1%old_cg(:) 
     endif
 
@@ -525,8 +526,11 @@ do ii = 1,g%ref%nat
     o2 => g%a(j)%o
     
     ! TODO: if(CG? veo si congelo o no
-    !
-    ! TODO: if(Li veo si chocho
+    if (o1%sym=='CG') then
+
+    endif
+
+    ! TODO: if(Li veo si choco
 
     vd(:) = vdistance(o1,o2,.true.)
     dr = dot_product(vd,vd)
@@ -785,95 +789,10 @@ enddo
 
 end subroutine fuerza
 
-subroutine knock(g) !Congela o no
-class(group)    :: g
-type(atom), pointer        :: o1, o2
-type(atom_dclist), pointer :: la 
-real(dp):: ne,vd(3),dr
-integer :: i,k,j,m,lit,cng,l !'lit' y 'cng' para identificar a Li y a la cong.
-
-la => g%alist
-
-do i = 1, g%nat-1 
-  la => la%next
-  o1 => la%o
-
-  k=o1%tipo
-
-  do j = i+1, g%nat !n
-    la => la%next
-    o2 => la%o
-
-    m=o2%tipo 
-
-    vd(:) = o1%pos(:)-o2%pos(:)
-
-     !Armar la caja
-     do l=1,2       !Sin contar en z ;)
-       if (vd(l)>box(l)*.5_dp) then
-       vd(l)=vd(l)-box(l)
-       else if (vd(l)<-box(l)*.5_dp) then
-       vd(l)=vd(l)+box(l)
-       endif
-    
-     ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
-
-     enddo
-
-    dr = dot_product(vd,vd)
-    if(dr>r0(k,m)**2) cycle !Sí es necesario :B
-
-    if(k*m==2) then !Esto se cumple sólo si son 1 y 2 :P (Li y CG)
-
-      ! Identifica los id del Li y del CG
-      if(m==1) then
-         vd(:)=o2%pos_old(:)-o1%pos(:)  
-      else
-         vd(:)=o1%pos_old(:)-o2%pos(:)  
-      endif
-
-      ! A continuación, si la posic. vieja del Li+ comparada con la del CG es gde.,
-      ! pasa a decidir si congela.
-      ! Si están "cerca" es probable que en un paso de sim.
-      ! anterior ya haya intentado depositar, y no vuelve a probar
-      ! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
-
-     !Armar la caja
-      do l=1,2       !Sin contar en z ;)
-        if (vd(l)>box(l)*.5_dp) then
-          vd(l)=vd(l)-box(l)
-        else if (vd(l)<-box(l)*.5_dp) then
-          vd(l)=vd(l)+box(l)
-        endif
-      
-      ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
-      enddo
-
-
-      dr = dot_product(vd,vd)
-
-      if(dr>r0(k,m)**2) then
-        ne=ran(idum) !nro aleatorio para decidir si congelar o no.
-       
-        if(ne<prob) then
-          call o1%setz('CG') !set_sym(o1,'CG')
-          if (a(lit)%pos(3)>z0) stop  !Dentro de la subr. sigue siendo lit ;)
-          cycle
-        endif
-      endif
-   
-    endif
-
-  enddo
-
-enddo
-
-endsubroutine
-
-subroutine knock2(list) ! Rebote brusco
+subroutine knock(list) ! Rebote brusco
 type(ngroup)              :: list
 real(dp)                  :: ne,vd(3),dr
-integer                   :: i,ii,j,jj,l,ts,tp 
+integer                   :: i,ii,j,jj,l 
 type(atom),pointer        :: o1,o2
 type(atom_dclist),pointer :: la
  
@@ -891,8 +810,6 @@ do ii = 1,list%ref%nat
 
     j = list%list(i,jj)
     o2 => list%a(j)%o
-
-    ts = o2%id(jj)
 
     vd(:) = o1%pos(:)-o2%pos(:)
 
@@ -940,6 +857,19 @@ do i = 1, list%b%nat
   call list%addref(o1)
 enddo
 
+! ESTO ES DE LA RUTINA VIEJA - REVISAR POR LAS DUDAS ANTES DE TIRAR
+
+! Lo que sigue iba por si la posic. vieja del Li+ comparada con la del CG es gde.,
+! pasa a decidir si congela.
+! Si están "cerca" es probable que en un paso de sim.
+! anterior ya haya intentado depositar, y no vuelve a probar
+! if(m==1) then
+!    vd(:)=o2%pos_old(:)-o1%pos(:)  
+! else
+!    vd(:)=o1%pos_old(:)-o2%pos(:)  
+! endif
+
+! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
 endsubroutine
 
 subroutine hspheres(list) ! Rebote brusco en solucion
