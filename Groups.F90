@@ -336,8 +336,8 @@ class(atom)         :: a
 integer             :: i,j
 
 ! Dettach the atom from all the groups
-do i=1,a%ngr
-  call a%gr(i)%o%detach(a)
+do while (a%ngr/=0)
+  call a%gr(1)%o%detach(a)
 enddo
 deallocate(a%gr,a%id)
 
@@ -666,27 +666,23 @@ end subroutine group_detach_all
 subroutine group_all_destroy_attempt(g)
 ! Detach all atoms from group
 class(group)               :: g
-type(atom_dclist), pointer :: la,next
+type(atom_dclist), pointer :: la
+type(atom), pointer        :: o
 
 ! Circulo por la lista hasta que la vacio
-la => g%alist%next
+la => g%alist
 do while(g%nat/=0)
-  next => la%next
+  la=>la%next
+  o=>la%o
     
-  if (la%o%ngr==1) then
-    ! Destroy atom, since `g` is its only group
-    if(la%o%try_dest()) deallocate(la%o)
-  else
-    ! Delete group id from atom `gr` list
-    call la%o%delgr(g)
-  endif
-           
-  ! Deattach the link from the group
-  call la%deattach()
-  deallocate(la)
-  g%nat = g%nat - 1
+  ! Detach
+  call g%detach_link(la)
 
-  la=>next
+  if (o%ngr==0) then
+    call o%dest()
+    deallocate(o)
+  endif
+   
 enddo
 
 ! TODO: propiedades extras para modificar?
@@ -698,27 +694,28 @@ end subroutine group_all_destroy_attempt
 subroutine group_all_destroy(g)
 ! Detach all atoms from group
 class(group)               :: g
-type(atom_dclist), pointer :: la,next
+type(atom_dclist), pointer :: la
+type(atom), pointer        :: o
 
 ! Circulo por la lista hasta que la vacio
 la => g%alist
 do while(g%nat/=0)
-  next => la%next
+  la=>la%next
+  o=>la%o
     
-  ! Destroy atom
-  call la%o%dest()
-         
-  ! Deattach the link from the group
-  call la%deattach()
-  deallocate(la)
+  ! Detach
+  call g%detach_link(la)
 
-  la=>next
+  ! Destroy
+  call o%dest()
+  deallocate(o)
+   
 enddo
 
 ! TODO: propiedades extras para modificar?
 g%nat = 0
 g%mass = 0._dp
-
+    
 end subroutine group_all_destroy
 
 ! Select atoms
