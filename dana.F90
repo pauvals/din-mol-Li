@@ -109,6 +109,7 @@ program din_mol_Li
 
     ! Allocatea el atomo-como un puntero del tipo 'atom'
     allocate(pa)
+    call pa%init()
 
     read(11,*) pa%sym,pa%pos(:),pa%m
     call pa%setz(pa%sym) ! set_sym(pa,pa%sym) Asigna algunos valores según tipo de átomo
@@ -155,6 +156,8 @@ program din_mol_Li
     pa=>sys%a(j)%o
     if (pa%pos(3) > z1 .and. pa%pos(3) < zmax) then
       allocate(pb)
+      call pb%init()
+
       k=k+1
 
       ! Asigna propiedades al bloque de partículas
@@ -200,8 +203,6 @@ program din_mol_Li
 
   do i=1,nst
 
-    box(3)=zmax
-
     ! Da un paso #wii
     ! call ermak_a(a,ranv) ! revisar declaración de ranv
     ! call fuerza(a,r0)
@@ -213,7 +214,7 @@ program din_mol_Li
     call test_update()
     ! call update()
     
-    ! !Ve si congela o rebota
+    ! Ve si congela o rebota
     ! call knock(list)          
     
     ! Ajuste de tamaño, y cant. de partículas en reservorio
@@ -257,6 +258,7 @@ contains
        la=>la%next
        o1=> la%o
        allocate(o2)
+       call o2%init()
        call g1%attach(o2) ! Sys
 
        ! Lista de vecinos
@@ -274,6 +276,7 @@ contains
     n= n + nx 
  
     ! Agrega nuevos vecinos para los atomos agregados y los cercanos
+    box(3)=zmax 
     call update()
                      
   endsubroutine
@@ -394,9 +397,9 @@ fac2 = sqrt(2._dp*kB_ui*Tsist*fac1)
 la => g%ref%alist
 do ii = 1,g%ref%nat
   la => la%next
-  o1 => la%o ! o1 es el único que puede ser CG
+  o1 => la%o 
 
-  !Para luego ver congelam. en knock
+  !Para luego ver congelam.
   o1%old_cg(:)=o1%pos(:)
 
   do j = 1,3
@@ -414,19 +417,18 @@ do ii = 1,g%ref%nat
       if (o1%pos(j)>box(j)) o1%pos(j)=o1%pos(j)-box(j)
       if (o1%pos(j)<o) o1%pos(j)=o1%pos(j)+box(j)
     else 
-      !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
       ! Rebote en zmax
-      ! if(o1%pos(j)>zmax) then
+      if(o1%pos(j)>zmax) then
       !   o1%pos(3)=o1%pos(3)-2*(o1%pos(3)-zmax)
       !   o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
-      ! endif
       o1%pos(:)= o1%old_cg(:) 
+      endif
     endif
 
   enddo
  
   ! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
-  if(o1%pos(3)<1._dp) then !No importa si < o <=
+  if(o1%pos(3)<1._dp) then 
     ne=ran(idum)
     if(ne<prob) then
       call o1%setz('F')   ! Es inerte en este paso de tiempo
@@ -460,7 +462,7 @@ do ii = 1,g%ref%nat
         ! Permite deposicion en cadena pero depende del atom id.
         ! Si queremos deposicion en cadnea sería mejor programarla
         ! para que no dependa de el orden en que se ejecuta el do.
-        if (o2%pos(3)>z0) stop 
+        if (o1%pos(3)>z0) stop ! raro 
       endif
     endif
 
@@ -807,55 +809,55 @@ enddo
 ! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
 endsubroutine
 
-subroutine hspheres(list) ! Rebote brusco en solucion
-type(ngroup)              :: list
-real(dp)                  :: ne,vd(3),dr
-integer                   :: i,ii,k,j,jj,m,l,ts,tp 
-type(atom),pointer        :: o1,o2
-type(atom_dclist),pointer :: la
- 
-! Por todos los pares de particulas
-
-la => list%ref%alist
-do ii = 1,list%ref%nat
-  la => la%next
-  o1 => la%o ! o1 es el único que puede ser CG
-
-  i = o1%gid(list)
-  k= o1%tipo
-  tp = o1%id(ii)
-
-  do jj = 1, list%nn(i)  ! sobre los vecinos
-
-    j = list%list(i,jj)
-    o2 => list%a(j)%o
-
-    m = o2%tipo
-    ts = o2%id(jj)
-
-    vd(:) = o1%pos(:)-o2%pos(:)
-
-    !Condicion de imagen minima
-    do l=1,2       !Sin contar en z ;)
-       if (vd(l)>box(l)*.5_dp) then
-         vd(l)=vd(l)-box(l)
-       else if (vd(l)<-box(l)*.5_dp) then
-         vd(l)=vd(l)+box(l)
-       endif
-    enddo
-
-    dr = dot_product(vd,vd)
-
-    if(dr>list%rcut2) cycle !Sí es necesario :B
-
-    ! Retorno la partícula a la solución
-    o2%pos(:)= o2%old_cg(:) 
-
-  enddo
-
-enddo
-
-endsubroutine
+! subroutine hspheres(list) ! Rebote brusco en solucion
+! type(ngroup)              :: list
+! real(dp)                  :: ne,vd(3),dr
+! integer                   :: i,ii,k,j,jj,m,l,ts,tp 
+! type(atom),pointer        :: o1,o2
+! type(atom_dclist),pointer :: la
+!  
+! ! Por todos los pares de particulas
+! 
+! la => list%ref%alist
+! do ii = 1,list%ref%nat
+!   la => la%next
+!   o1 => la%o ! o1 es el único que puede ser CG
+! 
+!   i = o1%gid(list)
+!   k= o1%tipo
+!   tp = o1%id(ii)
+! 
+!   do jj = 1, list%nn(i)  ! sobre los vecinos
+! 
+!     j = list%list(i,jj)
+!     o2 => list%a(j)%o
+! 
+!     m = o2%tipo
+!     ts = o2%id(jj)
+! 
+!     vd(:) = o1%pos(:)-o2%pos(:)
+! 
+!     !Condicion de imagen minima
+!     do l=1,2       !Sin contar en z ;)
+!        if (vd(l)>box(l)*.5_dp) then
+!          vd(l)=vd(l)-box(l)
+!        else if (vd(l)<-box(l)*.5_dp) then
+!          vd(l)=vd(l)+box(l)
+!        endif
+!     enddo
+! 
+!     dr = dot_product(vd,vd)
+! 
+!     if(dr>list%rcut2) cycle !Sí es necesario :B
+! 
+!     ! Retorno la partícula a la solución
+!     o2%pos(:)= o2%old_cg(:) 
+! 
+!   enddo
+! 
+! enddo
+! 
+! endsubroutine
 
 function gasdev() !Nro aleat.
   real(dp)                  :: rsq,v1,v2
