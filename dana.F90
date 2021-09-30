@@ -1,6 +1,7 @@
 program din_mol_Li
   use gems_groups
   use gems_neighbor
+  use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_max, sclock_rate
 
   implicit none
  
@@ -27,7 +28,7 @@ program din_mol_Li
   real(dp)            :: prob
 
   ! Parametros de integración
-  real(dp), parameter :: h=1.e-2_dp ! paso de tiempo
+  real(dp), parameter :: h=1.e-3_dp ! paso de tiempo
   integer             :: nst        ! nro de pasos
   integer             :: nwr        ! paso de escritura
   real(dp)            :: t=0.0_dp   ! tiempo en ps
@@ -52,7 +53,12 @@ program din_mol_Li
 
   ! Group used to compute neighbors list
   type(ngroup)        :: hs
-  
+   
+  ! Init wall time
+  call system_clock(count_rate=sclock_rate)
+  call system_clock(count_max=sclock_max)
+  call system_clock(sclock_t1)
+               
   ! Valores de epsilon y r0 :P
   eps(:,2) = 0
   r0(:,2)  = 0
@@ -77,6 +83,7 @@ program din_mol_Li
   ! Init lista para choques de esferas duras
   call hs%init()
   call hs%setrc(2.5_dp) ! Maximo radio de corte
+  nb_dcut=6._dp        ! The shell length for verlet update criteria
  
   ! Grupo chunk
   call chunk%init()
@@ -170,29 +177,6 @@ program din_mol_Li
   enddo
   nx = k !guardo el valor de k
 
-  ! Calculo la velocidad neta del sistema
-  ! Sino se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
-  ! internas ;)
-  do k=1,sys%nat 
-    vm(:)= sum(sys%a(k)%o%pos(:) - sys%a(k)%o%pos_old(:))/n
-  enddo
-
-  ! Sustraer la velocidad neta
-  do i=1,sys%nat
-    pa=>sys%a(i)%o
-    pa%pos_old(:) = pa%pos_old(:)-vm(:)
-  end do
-
-  ! Valores inic. de las ctes. de Ermak
-  ! call set_ermak(h,gama,Tsist)
-
-  ! calculo vel. y acelerac. iniciales
-  do i=1, sys%nat
-    pa=>sys%a(i)%o
-    pa%vel(:) = (pa%pos(:)-pa%pos_old(:))/h
-    pa%acel(:) = pa%force(:)/pa%m
-  enddo
- 
   ! Abro archivos de salida
   open(11,File='Li.xyz')
   open(12,File='E.dat')
@@ -200,6 +184,8 @@ program din_mol_Li
   open(14,File='rho.dat')
 
   call salida() !Para que escriba la config. inic. en el primer paso ;)
+
+  call timer_start()
 
   do i=1,nst
 
@@ -225,7 +211,10 @@ program din_mol_Li
     if (mod(i,nwr)==0) then
       call salida()
     endif
-
+   
+    ! Timming information
+    call timer_dump(i,nup=nupd_vlist)
+  
     t=t+h
    
   enddo
@@ -289,7 +278,7 @@ contains
 
     ! Coords. de partíc.
     write(11,*) sys%nat ! n
-    write(11,*)
+    write(11,*) "info:",zmax,sys%nat
     do j =1, sys%nat
      pa=>sys%a(j)%o
      write(11,*) pa%sym,pa%pos(:),pa%tipo
@@ -414,8 +403,14 @@ do ii = 1,g%ref%nat
 
     if(j<3) then
       ! PBC en x e y
-      if (o1%pos(j)>box(j)) o1%pos(j)=o1%pos(j)-box(j)
-      if (o1%pos(j)<o) o1%pos(j)=o1%pos(j)+box(j)
+      if (o1%pos(j)>box(j)) then
+         o1%pos(j)=o1%pos(j)-box(j)
+         o1%pos_old(j)=o1%pos_old(j)-box(j)
+       endif  
+      if (o1%pos(j)<o) then
+         o1%pos(j)=o1%pos(j)+box(j)
+         o1%pos_old(j)=o1%pos_old(j)+box(j)
+      endif
     else 
       ! Rebote en zmax
       if(o1%pos(j)>zmax) then
@@ -451,7 +446,7 @@ do ii = 1,g%ref%nat
     dr = dot_product(vd,vd)
 
     if(dr>g%rcut2) cycle !Sí es necesario :B
-      
+
     ! Deposicion por contacto con otra particula metalica
     if (o2%tipo==2) then
       

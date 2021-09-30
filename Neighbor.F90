@@ -201,9 +201,9 @@ end interface
 type(ngroup_vop),public :: ngindex
 
 ! Global variables
-real(dp),target     :: nb_dcut=1._dp        ! The shell length for verlet update criteria
-integer             :: nupd_vlist = 0       ! Number of updates to print in the log
-real(dp)            :: maxrcut=0.0_dp       ! Maximum cut ratio
+real(dp),target,public  :: nb_dcut=1._dp        ! The shell length for verlet update criteria
+integer , public        :: nupd_vlist = 0       ! Number of updates to print in the log
+real(dp)                :: maxrcut=0.0_dp       ! Maximum cut ratio
 
 ! Ghost atoms. No need index.
 logical,public              :: useghost=.false.

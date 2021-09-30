@@ -7,6 +7,7 @@ dana_SOURCES = dana.F90 \
                Errors.f90    \
                Constants.F90 \
                Neighbor.F90  \
+               Errors.F90  \
                Groups.F90 
 
 # Fortran Preprocesor Templates	       
@@ -69,7 +70,7 @@ debug:
 all: dana
 
 Constants.o:     
-dana.o: Groups.o Neighbor.o
+dana.o: Groups.o Neighbor.o Errors.o
 Errors.o: Constants.o
 Groups.o: Constants.o 
 Neighbor.o:  Constants.o Groups.o Errors.o

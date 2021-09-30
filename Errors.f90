@@ -21,8 +21,6 @@ use gems_constants,     only: dp,dm,linewidth, time1
 use, intrinsic :: iso_fortran_env, only: input_unit, output_unit, error_unit
 implicit none
 
-logical :: silent=.false.
-
 private 
 public  :: msn,wlog,wwan,werr,wstd,silent,wprt,wref
 public  :: timer_start, timer_dump
@@ -40,7 +38,16 @@ integer,public :: sclock_rate, sclock_max,sclock_t1,sclock_t2
 ! TODO Error handling. Build buffer using a linked list of characters like a FIFO pile. In
 ! this way, errors or messages that a subroutine attempt to write might be
 ! handle from outside this subrroutine, choosing to print it or drop it,
-  ! depending if an error or warning has been found.
+! depending if an error or warning has been found.
+
+logical        :: silent=.false.
+
+! True right after a wwan/wstd occurs, false if not.
+logical,public :: stats
+
+! True after a wwan occurs. Manually set to .false. is required.
+! This is usefull for group a block of wwan calls.
+logical,public :: wstats
 
 contains
 
@@ -66,11 +73,13 @@ subroutine wstd(message,logica)
 logical,intent(in),optional      :: logica
 character(*),intent(in),optional :: message
 
-if(silent) return
-
+stats=.false.
 if(present(logica)) then
   if (.not.logica) return
 endif
+stats=.true.
+
+if(silent) return
 
 write(logunit,'(a)',advance='no') '#-STD-> '
 if (present(message))  write(logunit,'(a)') trim(message)
@@ -83,16 +92,20 @@ subroutine wwan(message,logica)
 logical,intent(in),optional      :: logica
 character(*),intent(in),optional :: message
 
-if(silent) return
-
+stats=.false.
 if(present(logica)) then
   if (.not.logica) return
 endif
+stats=.true.
+wstats=.true.
+
+if(silent) return
 
 write(logunit,'(a)',advance='no') '#-WAN-> '
 if (present(message))  write(logunit,'(a)') trim(message)
 
 call flush(logunit)
+
 
 endsubroutine wwan
 
