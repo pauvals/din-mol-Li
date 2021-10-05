@@ -1,7 +1,8 @@
 program din_mol_Li
   use gems_groups
   use gems_neighbor
-  use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_max, sclock_rate
+  use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_t2, wstd, sclock_max, sclock_rate,logunit
+  use gems_constants, only: time1
 
   implicit none
  
@@ -11,7 +12,8 @@ program din_mol_Li
   integer               :: n, nx                ! Nro de particulas
   real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Largo de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
-  real(dp), parameter   :: gama=1._dp           ! Para fricción
+  real(dp), parameter   :: gama=1._dp           ! Para fricción (no usado)
+  real(dp), parameter   :: dif=1._dp            ! Difusion (USADO)
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
   real(dp)              :: eps(3,3),r0(3,3)     ! eps y r0 definidas como matrices para c/ tipo
 
@@ -25,10 +27,10 @@ program din_mol_Li
   ! Variables dinámicas, agrupadas en átomo
   type(atom), allocatable, target :: a(:) ! átomo
   type(atom), pointer             :: pa=>null(), pb=>null()
-  real(dp)            :: prob
+  real(dp)            :: prob,max_vel=0._dp
 
   ! Parametros de integración
-  real(dp), parameter :: h=1.e-3_dp ! paso de tiempo
+  real(dp), parameter :: h=1.e-2_dp ! paso de tiempo
   integer             :: nst        ! nro de pasos
   integer             :: nwr        ! paso de escritura
   real(dp)            :: t=0.0_dp   ! tiempo en ps
@@ -83,7 +85,7 @@ program din_mol_Li
   ! Init lista para choques de esferas duras
   call hs%init()
   call hs%setrc(1.5_dp) ! Maximo radio de corte
-  nb_dcut=6._dp         ! The shell length for verlet update criteria
+  nb_dcut=10._dp        ! The shell length for verlet update criteria
  
   ! Grupo chunk
   call chunk%init()
@@ -195,7 +197,7 @@ program din_mol_Li
     ! call ermak_b(a,ranv)
     ! call cbrownian(sys,h,gama,Tsist)
 
-    call cbrownian_hs(hs,h,gama,prob,Tsist)
+    call cbrownian_hs(hs,h,dif,prob,Tsist)
  
     call test_update()
     ! call update()
@@ -224,7 +226,32 @@ program din_mol_Li
   close(13)
   close(14)
 
+  
+  !FIN
+  call cpu_time(time1)
+  if (time1<60) then
+    call wstd(); write(logunit,'("cpu time: ",f10.3," s")') time1
+  elseif(time1<3600) then
+    call wstd(); write(logunit,'("cpu time: ",i0," m ",f10.3," s")') int(time1/60.0_dp),mod(time1,60.d0)
+  else
+    call wstd(); write(logunit,'("cpu time: ",i0," h ",i0," m")') int(time1/3600.0_dp),int(mod(time1,3600.d0)/60.0_dp)
+  endif 
 
+  call system_clock(sclock_t2)
+  time1=(sclock_t2-sclock_t1)/real(sclock_rate)
+  if (time1<60) then
+    call wstd(); write(logunit,'("wall time: ",f10.3," s")') time1
+  elseif(time1<3600) then
+    call wstd(); write(logunit,'("wall time: ",i0," m ",f10.3," s")') int(time1/60.0_dp),mod(time1,60.d0)
+  else
+    call wstd(); write(logunit,'("wall time: ",i0," h ",i0," m")') int(time1/3600.0_dp),int(mod(time1,3600.d0)/60.0_dp)
+  endif 
+ 
+!  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list acualizations'
+  call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
+  call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
+  call wstd(); write(logunit,'("maximo desplzamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
+ 
 contains
 
   subroutine mv_reserva(g1, g2, nx) ! Muevo reservorio y agrego partículas
@@ -254,6 +281,9 @@ contains
        call hs%attach(o2)
        call hs%b%attach(o2)
        call hs%ref%attach(o2)
+
+       ! TODO: call wwan("Posibilidad de colision",o1%pos(3)<hs%rcut)
+       ! Si vos cambias el rcut, esto te va a hacer acordar de crear un nuevo chunk.
 
        ! Nuevas partícs. reciben props. de otras ya existentes
        o1%pos(3)=o1%pos(3)+ dist 
@@ -372,16 +402,16 @@ contains
 
 ! Integrac. browniana
 
-subroutine cbrownian_hs(g,h,gama,prob,Tsist)
+subroutine cbrownian_hs(g,h,dif,prob,Tsist)
 class(ngroup)              :: g
 type(atom), pointer        :: o1, o2 
 type(atom_dclist), pointer :: la 
-real(dp),intent(in)        :: h,gama,Tsist,prob
+real(dp),intent(in)        :: h,dif,Tsist,prob
 real(dp)                   :: fac1, fac2, r1, posold, ne, vd(3), dr
 integer                    :: i,j,ii,jj
 
-fac1 = h/gama                     
-fac2 = sqrt(2._dp*kB_ui*Tsist*fac1) 
+! TODO: chequear sea el algorithmo de mayers
+fac1 = sqrt(2._dp*dif*h) 
 
 la => g%ref%alist
 do ii = 1,g%ref%nat
@@ -396,7 +426,7 @@ do ii = 1,g%ref%nat
     r1=gasdev()
   
     posold = o1%pos(j)
-    o1%pos(j) = posold + fac1*o1%force(j)/o1%m + r1*fac2/sqrt(o1%m)
+    o1%pos(j) = posold + r1*fac1
 
     ! Velocidad derivada de euler para atras
     o1%vel(j) = (o1%pos(j)-posold)/h
@@ -421,6 +451,8 @@ do ii = 1,g%ref%nat
     endif
 
   enddo
+
+  max_vel=max(max_vel,dot_product(o1%vel,o1%vel))
  
   ! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
   if(o1%pos(3)<1._dp) then 

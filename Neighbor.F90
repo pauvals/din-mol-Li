@@ -201,9 +201,10 @@ end interface
 type(ngroup_vop),public :: ngindex
 
 ! Global variables
-real(dp),target,public  :: nb_dcut=1._dp        ! The shell length for verlet update criteria
-integer , public        :: nupd_vlist = 0       ! Number of updates to print in the log
-real(dp)                :: maxrcut=0.0_dp       ! Maximum cut ratio
+real(dp),target,public  :: nb_dcut=1._dp      ! The shell length for verlet update criteria
+integer , public        :: nupd_vlist = 0,&   ! Number of updates to print in the log
+                           nn_vlist =0
+real(dp)                :: maxrcut=0.0_dp     ! Maximum cut ratio
 
 ! Ghost atoms. No need index.
 logical,public              :: useghost=.false.
@@ -602,7 +603,7 @@ do ii = 1,g%ref%nat
   !OMP: Se reparte la tarea entre los idle threads
   !$OMP TASK DEFAULT(NONE)     &
   !$OMP& FIRSTPRIVATE(ai,i)    &
-  !$OMP& SHARED(g,rcut,mic)    &
+  !$OMP& SHARED(g,rcut,mic,nn_vlist)    &
   !$OMP& PRIVATE(aj,j,vd,rd,m)
 
   ! Reset number of neighbors
@@ -625,6 +626,7 @@ do ii = 1,g%ref%nat
 
   enddo
   g%nn(i)=m
+  nn_vlist=max(nn_vlist,g%nn(i))
 
   !$OMP END TASK
 enddo
@@ -670,6 +672,7 @@ do j = 1, g%b%nat
 
 enddo
 g%nn(i)=m
+nn_vlist=max(nn_vlist,g%nn(i))
 
 end subroutine ngroup_verlet_atom
 
@@ -704,7 +707,7 @@ do ii = 1,g%ref%nat
 
   !$OMP TASK DEFAULT(NONE)             &
   !$OMP& FIRSTPRIVATE(ai)              &
-  !$OMP& SHARED(g,rcut,mic)            &
+  !$OMP& SHARED(g,rcut,mic,nn_vlist)            &
   !$OMP& PRIVATE(rc,i,nabor,nc,j,aj,k,vd,rd)   
  
   i = ai%gid(g)
@@ -742,6 +745,7 @@ do ii = 1,g%ref%nat
     enddo
 
   enddo
+  nn_vlist=max(nn_vlist,g%nn(i))
 
   !$OMP END TASK
 
@@ -806,6 +810,7 @@ do nabor=0,26
   enddo
 
 enddo
+nn_vlist=max(nn_vlist,g%nn(i))
 
 end subroutine ngroup_cells_atom
 
@@ -869,7 +874,9 @@ do i = 1, sys%nat
 
 enddo
 
-if (sqrt(dispmax1)+sqrt(dispmax2)>nb_dcut) then
+rd=sqrt(dispmax1)+sqrt(dispmax2)
+
+if (rd>nb_dcut) then
   if(useghost) then
     if(fullghost) then
        call pbcfullghost()
