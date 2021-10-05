@@ -82,8 +82,8 @@ program din_mol_Li
 
   ! Init lista para choques de esferas duras
   call hs%init()
-  call hs%setrc(2.5_dp) ! Maximo radio de corte
-  nb_dcut=6._dp        ! The shell length for verlet update criteria
+  call hs%setrc(1.5_dp) ! Maximo radio de corte
+  nb_dcut=6._dp         ! The shell length for verlet update criteria
  
   ! Grupo chunk
   call chunk%init()

@@ -4,10 +4,9 @@ AUTOMAKE_OPTIONS = foreign
 bin_PROGRAMS = dana
 
 dana_SOURCES = dana.F90 \
-               Errors.f90    \
                Constants.F90 \
                Neighbor.F90  \
-               Errors.F90  \
+               Errors.f90  \
                Groups.F90 
 
 # Fortran Preprocesor Templates	       
