@@ -9,7 +9,7 @@ program din_mol_Li
   integer,parameter     :: dp=8
  
   !Cosas del sistema  #what a quilombo
-  integer               :: n, nx                ! Nro de particulas
+  integer               :: n, nx, nchunk        ! Nros de particulas
   real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Largo de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción (no usado)
@@ -66,10 +66,10 @@ program din_mol_Li
   r0(:,2)  = 0
   eps(2,:) = 0
   r0(2,:)  = 0
-  r0(2,1)  = 3.5_dp
+  r0(2,1)  = 3.5_dp  
   r0(1,2)  = 3.5_dp
-  eps(1,1) = 2313.6_dp
-  r0(1,1)  = 3.5_dp
+  eps(1,1) = 2313.6_dp 
+  r0(1,1)  = 3.2_dp
   eps(3,3) = 121._dp
   r0(3,3)  = 3.61_dp
   eps(1,3) = 529.1_dp
@@ -84,8 +84,8 @@ program din_mol_Li
 
   ! Init lista para choques de esferas duras
   call hs%init()
-  call hs%setrc(1.5_dp) ! Maximo radio de corte
-  nb_dcut=10._dp        ! The shell length for verlet update criteria
+  call hs%setrc(1.19_dp) ! Maximo radio de corte
+  nb_dcut=10._dp         ! The shell length for verlet update criteria
  
   ! Grupo chunk
   call chunk%init()
@@ -106,8 +106,8 @@ program din_mol_Li
   close(15)
 
   ! Tamaños iniciales de "reservorio"
-  z1 = z0 +dist
-  zmax = z1+dist 
+  z1 = z0 + dist
+  zmax = z1 + dist 
 
   ! Leer configuración inicial
   open(11,File='posic_inic.xyz')
@@ -125,7 +125,7 @@ program din_mol_Li
     pa%force(:)=0._dp
     pa%pos_old(:)=pa%pos(:)
 
-    ! Attach atom to the system
+    ! Agrega atom al sistema (sys)
     call sys%attach(pa)
 
     ! Agrego atomos a los grupos 
@@ -159,25 +159,31 @@ program din_mol_Li
   call set_rho(rho)
   rho0=rho
                       
-  ! Crear chunk de atoms:
-  k=0
-  do j=1,sys%nat
-    pa=>sys%a(j)%o
-    if (pa%pos(3) > z1 .and. pa%pos(3) < zmax) then
-      allocate(pb)
-      call pb%init()
+  ! Leer chunk de atoms:
+  open(11,File='chunk.xyz')
+  read(11,*) nchunk
+  read(11,*)
 
-      k=k+1
+  do j=1,nchunk
+    allocate(pb)
+    call pb%init()
 
-      ! Asigna propiedades al bloque de partículas
-      call atom_asign(pb, pa)
+    ! Asigna propiedades al bloque de partículas
+    read(11,*) pb%sym,pb%pos(:),pb%m
+    call pb%setz(pb%sym)
+    pb%force(:)=0._dp
+    pb%pos_old(:)=pb%pos(:)
 
-      ! Agrego un átomo a un grupo chunk
-      call chunk%attach(pb)
-      pb=>null()
-    endif
+    ! Agrego un átomo a un grupo chunk
+    call chunk%attach(pb)
+
+    ! Set pbc
+    pb%pbc(:)=.true.
+    pb%pbc(3)=.false.
+
+    pb=>null()
   enddo
-  nx = k !guardo el valor de k
+  close (11)
 
   ! Abro archivos de salida
   open(11,File='Li.xyz')
@@ -214,7 +220,7 @@ program din_mol_Li
       call salida()
     endif
    
-    ! Timming information
+    ! Timing information
     call timer_dump(i,nup=nupd_vlist)
   
     t=t+h
@@ -247,7 +253,7 @@ program din_mol_Li
     call wstd(); write(logunit,'("wall time: ",i0," h ",i0," m")') int(time1/3600.0_dp),int(mod(time1,3600.d0)/60.0_dp)
   endif 
  
-!  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list acualizations'
+!  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplzamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
@@ -261,7 +267,7 @@ contains
     integer :: j,l,k         ! pierde acceso a la k global
     integer, intent(in) :: nx
 
-    ! Criterio para actualizar
+    ! Criterio para actualizar-esto es lo que queda tunear
     if(abs(rho0-rho)<0.2*rho0) return
 
     z0 = z0 + dist
@@ -289,6 +295,7 @@ contains
        o1%pos(3)=o1%pos(3)+ dist 
        o1%pos_old(3)=o1%pos_old(3)+ dist
        call atom_asign(o2, o1)
+       o2%pbc(:) = o1%pbc(:)
        o2=>null()
     enddo
 
