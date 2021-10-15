@@ -148,7 +148,9 @@ type, extends(igroup), public :: ngroup
   ! forces on selected interactions
   logical :: disable=.false.
 
-  ! Always trying to use linked cell over verlet list
+  ! Automatic switch between search algorithm
+  logical :: autoswitch=.true.
+
   procedure(ngroup_cells),pointer :: lista=>ngroup_cells
   procedure(ngroup_cells_atom),pointer :: lista_atom=>ngroup_cells_atom
 
@@ -346,7 +348,7 @@ if(g%cells) then
   if(any(box(:)-g%ncells(:)*rcut<=rcut)) then
        
     ! Check if the cell size do not drop below cut radious
-    if(any(g%cell(:)>rcut)) then
+    if(any(box(:)/g%ncells(:)>rcut)) then
                 
       ! Update cell size (needed for NPT)
       g%cell(:)=box(:)/g%ncells(:)
@@ -405,18 +407,14 @@ subroutine cgroup_sort(g)
 ! variables extrañas son seteadas en la subrutina maps.
 class(cgroup),intent(inout)  :: g
 integer                      :: i,aux1(dm)
-real(dp)                     :: one_cell(3)
 type(atom),pointer           :: a
 
 g%head(:,:,:) = 0
 
-! Inverse of cell size
-one_cell(:)=1._dp/g%cell(:)
-
 ! Atoms of list a
 ! !$OMP  PARALLEL DO DEFAULT(NONE) &
 ! !$OMP& PRIVATE(i,a,aux1) &
-! !$OMP& SHARED(g,one_cell)
+! !$OMP& SHARED(g)
 do i = 1,g%nat
   a => g%a(i)%o
 
@@ -427,7 +425,7 @@ do i = 1,g%nat
   ! endwhere
 
   ! Get cell index
-  aux1(:)=int(a%pos(:)*one_cell(:))+1
+  aux1(:)=int(a%pos(:)/g%cell(:))+1
   ! j = 1 + dot_product(aux1,cellaux)
 
   ! Build cell list
@@ -536,6 +534,11 @@ class(ngroup) :: g
 
 ! Check if neighbor list is needed
 if(.not.associated(g%lista)) return
+
+! Update cells
+call g%b%update()
+
+if(.not.g%autoswitch) return
 
 if(g%b%cells) then
   g%lista => ngroup_cells
@@ -839,7 +842,6 @@ do i = 1, ngindex%size
   ! Check to skip
   if (g%disable) cycle
 
-  call g%b%update()
   call ngroup_setlista(g)
 
   if(associated(g%lista)) call g%lista()
@@ -1321,7 +1323,7 @@ rcut=maxrcut+nb_dcut
 
 ! Destroy all ghost atoms
 ! FIXME: avoid this deallocate.
-call ghost%try_destroy_all()
+call ghost%destroy_all()
 
 ! Make local atoms pbc
 call do_pbc(sys)
