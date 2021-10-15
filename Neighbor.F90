@@ -345,11 +345,11 @@ rcut=g%rcut+nb_dcut
 ! Esto evita alocatear head t odo el tiempo 
 if(g%cells) then
   ! Check if it is not possible to include more cells
-  if(any(box(:)-g%ncells(:)*rcut<=rcut)) then
+  if(all(box(:)-g%ncells(:)*rcut<=rcut)) then
        
     ! Check if the cell size do not drop below cut radious
-    if(any(box(:)/g%ncells(:)>rcut)) then
-                
+    if(all(box(:)/g%ncells(:)>rcut)) then
+      
       ! Update cell size (needed for NPT)
       g%cell(:)=box(:)/g%ncells(:)
       return
