@@ -106,6 +106,7 @@ program din_mol_Li
   close(15)
 
   ! Tamaños iniciales de "reservorio"
+  dist= dist + hs%rcut
   z1 = z0 + dist
   zmax = z1 + dist 
 
@@ -173,6 +174,11 @@ program din_mol_Li
     call pb%setz(pb%sym)
     pb%force(:)=0._dp
     pb%pos_old(:)=pb%pos(:)
+
+    ! Como sus posic. en z empiezan en z= 0, las subo en zmax+rcut para cuando
+    ! haya que agregarlas
+    pb%pos(3)=pb%pos(3) + zmax 
+    pb%pos_old(3)=pb%pos(3) + zmax
 
     ! Agrego un átomo a un grupo chunk
     call chunk%attach(pb)
@@ -291,12 +297,14 @@ contains
        ! TODO: call wwan("Posibilidad de colision",o1%pos(3)<hs%rcut)
        ! Si vos cambias el rcut, esto te va a hacer acordar de crear un nuevo chunk.
 
-       ! Nuevas partícs. reciben props. de otras ya existentes
-       o1%pos(3)=o1%pos(3)+ dist 
-       o1%pos_old(3)=o1%pos_old(3)+ dist
+       ! Nuevas partícs. reciben props. de otras ya existentes 
        call atom_asign(o2, o1)
        o2%pbc(:) = o1%pbc(:)
        o2=>null()
+
+       ! y actualiza altura del chunk
+       o1%pos(3)=o1%pos(3)+ dist 
+       o1%pos_old(3)=o1%pos_old(3)+ dist
     enddo
 
     n= n + nx 
