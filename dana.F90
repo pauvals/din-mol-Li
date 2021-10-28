@@ -10,7 +10,7 @@ program din_mol_Li
  
   !Cosas del sistema  #what a quilombo
   integer               :: n, nx, nchunk        ! Nros de particulas
-  real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Largo de la caja, tau p/ rho
+  real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción (no usado)
   real(dp), parameter   :: dif=1._dp            ! Difusion (USADO)
@@ -27,7 +27,7 @@ program din_mol_Li
   ! Variables dinámicas, agrupadas en átomo
   type(atom), allocatable, target :: a(:) ! átomo
   type(atom), pointer             :: pa=>null(), pb=>null()
-  real(dp)            :: prob,max_vel=0._dp
+  real(dp)            :: prob,max_vel=0._dp, msd_u= 0._dp, msd_t= 0._dp, msd_max= 0._dp
 
   ! Parametros de integración
   real(dp), parameter :: h=1.e-2_dp ! paso de tiempo
@@ -224,6 +224,9 @@ program din_mol_Li
     ! Salida
     if (mod(i,nwr)==0) then
       call salida()
+      ! print*, 't', t
+      ! print*, 'msd_t', msd_t
+      ! print*, 'msd_max', msd_max
     endif
    
     ! Timing information
@@ -263,6 +266,7 @@ program din_mol_Li
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplzamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
+  call wstd(); write(logunit,'("MSD maximo en x-y: ",e10.3)') msd_max
  
 contains
 
@@ -274,7 +278,7 @@ contains
     integer, intent(in) :: nx
 
     ! Criterio para actualizar-esto es lo que queda tunear
-    if(abs(rho0-rho)<0.2*rho0) return
+    if(abs(rho0-rho)<0.14*rho0) return
 
     z0 = z0 + dist
     z1 = z1 + dist
@@ -425,7 +429,7 @@ real(dp),intent(in)        :: h,dif,Tsist,prob
 real(dp)                   :: fac1, fac2, r1, posold, ne, vd(3), dr
 integer                    :: i,j,ii,jj
 
-! TODO: chequear sea el algorithmo de mayers
+! TODO: chequear sea el algoritmo de mayers
 fac1 = sqrt(2._dp*dif*h) 
 
 la => g%ref%alist
@@ -451,11 +455,15 @@ do ii = 1,g%ref%nat
       if (o1%pos(j)>box(j)) then
          o1%pos(j)=o1%pos(j)-box(j)
          o1%pos_old(j)=o1%pos_old(j)-box(j)
-       endif  
+      endif  
       if (o1%pos(j)<o) then
          o1%pos(j)=o1%pos(j)+box(j)
          o1%pos_old(j)=o1%pos_old(j)+box(j)
       endif
+
+      ! En una componente (xt - x0)**2
+      msd_u= o1%vel(j) * o1%vel(j) * h * h
+      msd_t= msd_t + msd_u
     else 
       ! Rebote en zmax
       if(o1%pos(j)>zmax) then
@@ -468,9 +476,10 @@ do ii = 1,g%ref%nat
   enddo
 
   max_vel=max(max_vel,dot_product(o1%vel,o1%vel))
+
  
   ! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
-  if(o1%pos(3)<1._dp) then 
+  if(o1%pos(3)<=0._dp) then 
     ne=ran(idum)
     if(ne<prob) then
       call o1%setz('F')   ! Es inerte en este paso de tiempo
@@ -513,7 +522,10 @@ do ii = 1,g%ref%nat
   enddo
 
 enddo
- 
+
+msd_t= msd_t/g%nat
+msd_max= max(msd_max,msd_t)
+
 ! Add new CG to the ref group
 la=> g%ref%alist
 do i = 1, g%ref%nat
