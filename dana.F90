@@ -13,7 +13,7 @@ program din_mol_Li
   real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción (no usado)
-  real(dp), parameter   :: dif=1._dp            ! Difusion (USADO)
+  real(dp), parameter   :: dif=250._dp            ! Difusion (USADO)
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
   real(dp)              :: eps(3,3),r0(3,3)     ! eps y r0 definidas como matrices para c/ tipo
 
@@ -30,7 +30,7 @@ program din_mol_Li
   real(dp)            :: prob,max_vel=0._dp, msd_u= 0._dp, msd_t= 0._dp, msd_max= 0._dp
 
   ! Parametros de integración
-  real(dp), parameter :: h=1.e-2_dp ! paso de tiempo
+  real(dp), parameter :: h=1.e-3_dp ! paso de tiempo
   integer             :: nst        ! nro de pasos
   integer             :: nwr        ! paso de escritura
   real(dp)            :: t=0.0_dp   ! tiempo en ps
@@ -42,7 +42,7 @@ program din_mol_Li
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros
   real(dp)            :: vm(3)        ! Vector 3D auxiliar
-  real(dp)            :: dist
+  real(dp)            :: dist, rhomedia, cstdev, factor, factor2
 
   ! Esto es para Ermak
   real(dp)            :: cc0,cc1,cc2
@@ -84,7 +84,7 @@ program din_mol_Li
 
   ! Init lista para choques de esferas duras
   call hs%init()
-  call hs%setrc(1.19_dp) ! Maximo radio de corte
+  call hs%setrc(3.2_dp) ! Maximo radio de corte
   nb_dcut=10._dp         ! The shell length for verlet update criteria
  
   ! Grupo chunk
@@ -109,6 +109,14 @@ program din_mol_Li
   dist= dist + hs%rcut
   z1 = z0 + dist
   zmax = z1 + dist 
+
+  ! Para luego actualizar reservorio
+  rhomedia= 5.775329e-4_dp
+  cstdev= 1.0754306e-4_dp
+  factor= rhomedia - cstdev
+  factor2= rhomedia + cstdev
+  ! 0.000577532941264052= STATS_mean
+  ! 0.000107543058373559= 4*STATS_stddev
 
   ! Leer configuración inicial
   open(11,File='posic_inic.xyz')
@@ -277,8 +285,9 @@ contains
     integer :: j,l,k         ! pierde acceso a la k global
     integer, intent(in) :: nx
 
-    ! Criterio para actualizar-esto es lo que queda tunear
-    if(abs(rho0-rho)<0.14*rho0) return
+    ! Criterio para actualizar
+    ! if((rho0-rho)<0.3*rho0) return
+    if(rho>factor.or.rho<factor2) return
 
     z0 = z0 + dist
     z1 = z1 + dist
@@ -504,7 +513,9 @@ do ii = 1,g%ref%nat
     if(dr>g%rcut2) cycle !Sí es necesario :B
 
     ! Deposicion por contacto con otra particula metalica
+    ! 1.19 es el radio de Mayers
     if (o2%tipo==2) then
+      if(dr> 1.4161_dp) cycle
       
       ne=ran(idum)
       if(ne<prob) then
@@ -513,8 +524,17 @@ do ii = 1,g%ref%nat
         ! Permite deposicion en cadena pero depende del atom id.
         ! Si queremos deposicion en cadnea sería mejor programarla
         ! para que no dependa de el orden en que se ejecuta el do.
-        if (o1%pos(3)>z0) stop ! raro 
+        if (o1%pos(3)>z0) then
+                print*,'supero z0', o1%pos(3)
+                stop ! raro 
+        endif
+      else
+
+        o1%pos(:)= o1%old_cg(:) 
       endif
+
+      exit
+
     endif
 
     o1%pos(:)= o1%old_cg(:) 
