@@ -13,7 +13,8 @@ program din_mol_Li
   real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción (no usado)
-  real(dp), parameter   :: dif=250._dp            ! Difusion (USADO)
+  !real(dp), parameter   :: dif=250._dp          ! Difusion (USADO)
+  real(dp)              :: dif                  ! Difusion (USADO)
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
   real(dp)              :: eps(3,3),r0(3,3)     ! eps y r0 definidas como matrices para c/ tipo
 
@@ -30,7 +31,7 @@ program din_mol_Li
   real(dp)            :: prob,max_vel=0._dp, msd_u= 0._dp, msd_t= 0._dp, msd_max= 0._dp
 
   ! Parametros de integración
-  real(dp), parameter :: h=1.e-3_dp ! paso de tiempo
+  real(dp), parameter :: h=1.e-4_dp ! paso de tiempo
   integer             :: nst        ! nro de pasos
   integer             :: nwr        ! paso de escritura
   real(dp)            :: t=0.0_dp   ! tiempo en ps
@@ -96,6 +97,8 @@ program din_mol_Li
 
   ! Leer semilla, probabilidad, nro. pasos
   ! y otros valores iniciales
+
+  ! subrutinar
   open(15,File='entrada.ini')
   read(15,*) idum
   read(15,*) prob
@@ -119,6 +122,7 @@ program din_mol_Li
   ! 0.000107543058373559= 4*STATS_stddev
 
   ! Leer configuración inicial
+  ! subrutinar 2
   open(11,File='posic_inic.xyz')
   read(11,*) n
   read(11,*)
@@ -169,6 +173,7 @@ program din_mol_Li
   rho0=rho
                       
   ! Leer chunk de atoms:
+  ! subrutinar 3
   open(11,File='chunk.xyz')
   read(11,*) nchunk
   read(11,*)
@@ -217,7 +222,7 @@ program din_mol_Li
     ! call ermak_b(a,ranv)
     ! call cbrownian(sys,h,gama,Tsist)
 
-    call cbrownian_hs(hs,h,dif,prob,Tsist)
+    call cbrownian_hs(hs,h,prob,Tsist)
  
     call test_update()
     ! call update()
@@ -279,6 +284,7 @@ program din_mol_Li
 contains
 
   subroutine mv_reserva(g1, g2, nx) ! Muevo reservorio y agrego partículas
+          ! renombrar: para ver pistón vs. agregado partículas. Extiende el sistema *
     class(group)    :: g1, g2 
     type(atom_dclist), pointer :: la
     type(atom),pointer        :: o1,o2
@@ -430,21 +436,29 @@ contains
 
 ! Integrac. browniana
 
-subroutine cbrownian_hs(g,h,dif,prob,Tsist)
+subroutine cbrownian_hs(g,h,prob,Tsist)
 class(ngroup)              :: g
 type(atom), pointer        :: o1, o2 
 type(atom_dclist), pointer :: la 
-real(dp),intent(in)        :: h,dif,Tsist,prob
+real(dp),intent(in)        :: h,Tsist,prob
 real(dp)                   :: fac1, fac2, r1, posold, ne, vd(3), dr
 integer                    :: i,j,ii,jj
 
-! TODO: chequear sea el algoritmo de mayers
-fac1 = sqrt(2._dp*dif*h) 
 
 la => g%ref%alist
 do ii = 1,g%ref%nat
   la => la%next
   o1 => la%o 
+
+  ! Para cambio en coef. difusión SEI-SC
+  if (o1%pos(3)>80._dp) then
+     dif=250e1
+  else
+     dif=250._dp
+  endif
+
+  ! TODO: chequear sea el algoritmo de mayers
+  fac1 = sqrt(2._dp*dif*h) 
 
   !Para luego ver congelam.
   o1%old_cg(:)=o1%pos(:)
