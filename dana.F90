@@ -13,8 +13,7 @@ program din_mol_Li
   real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp), parameter   :: gama=1._dp           ! Para fricción (no usado)
-  !real(dp), parameter   :: dif=250._dp          ! Difusion (USADO)
-  real(dp)              :: dif                  ! Difusion (USADO)
+  real(dp)              :: dif, dif_sei, dif_sc ! Difusion (USADO)
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
   real(dp)              :: eps(3,3),r0(3,3)     ! eps y r0 definidas como matrices para c/ tipo
 
@@ -31,7 +30,7 @@ program din_mol_Li
   real(dp)            :: prob,max_vel=0._dp, msd_u= 0._dp, msd_t= 0._dp, msd_max= 0._dp
 
   ! Parametros de integración
-  real(dp), parameter :: h=1.e-4_dp ! paso de tiempo
+  real(dp)            :: h          ! paso de tiempo
   integer             :: nst        ! nro de pasos
   integer             :: nwr        ! paso de escritura
   real(dp)            :: t=0.0_dp   ! tiempo en ps
@@ -49,7 +48,7 @@ program din_mol_Li
   real(dp)            :: cc0,cc1,cc2
   real(dp)            :: sdr,sdv,skt
   real(dp)            :: crv1,crv2
-  ! real(dp)            :: ranv(n,3),a(n)%acel(3) !de usar esto también hay que hacer allocatable
+  real(dp),allocatable:: ranv(:,:)!,a(:)%acel(:) !de usar esto también hay que hacer allocatable
 
   ! Grupos varios
   type(group)         :: chunk
@@ -97,16 +96,7 @@ program din_mol_Li
 
   ! Leer semilla, probabilidad, nro. pasos
   ! y otros valores iniciales
-
-  ! subrutinar
-  open(15,File='entrada.ini')
-  read(15,*) idum
-  read(15,*) prob
-  read(15,*) nst
-  read(15,*) nwr
-  read(15,*) dist 
-  read(15,*) z0 
-  close(15)
+  call entrada()
 
   ! Tamaños iniciales de "reservorio"
   dist= dist + hs%rcut
@@ -160,6 +150,7 @@ program din_mol_Li
   end do
   close(11)
 
+  allocate(ranv(n,3))
 
   ! Set the box
   box(:)=100._dp
@@ -169,7 +160,7 @@ program din_mol_Li
   call update()
 
   ! Calcula rho-densidad reservorio inicial
-  call set_rho(rho)
+  call calc_rho(rho)
   rho0=rho
                       
   ! Leer chunk de atoms:
@@ -210,29 +201,32 @@ program din_mol_Li
   open(13,File='T.dat')
   open(14,File='rho.dat')
 
-  call salida() !Para que escriba la config. inic. en el primer paso ;)
+  call salida() ! Escribe la config. inic. en el primer paso ;)
 
   call timer_start()
 
   do i=1,nst
 
     ! Da un paso #wii
+
+    ! Para trabajar con din. Langevin
     ! call ermak_a(a,ranv) ! revisar declaración de ranv
     ! call fuerza(a,r0)
     ! call ermak_b(a,ranv)
-    ! call cbrownian(sys,h,gama,Tsist)
+    ! Ve si congela o rebota
+    ! call knock(list) ! REVISAR al usar, esto estaba más abajo,
+                        ! pero como va con ermak...
 
-    call cbrownian_hs(hs,h,prob,Tsist)
+    ! Para usar esferas duras
+    ! call cbrownian(sys,h,gama,Tsist)
+    call cbrownian_hs(hs,h,prob)
  
     call test_update()
     ! call update()
     
-    ! Ve si congela o rebota
-    ! call knock(list)          
-    
+    call calc_rho(rho)
     ! Ajuste de tamaño, y cant. de partículas en reservorio
-    call set_rho(rho)
-    call mv_reserva(sys, chunk, nx)
+    call reservas(sys, chunk, nx)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -245,6 +239,8 @@ program din_mol_Li
     ! Timing information
     call timer_dump(i,nup=nupd_vlist)
   
+    ! Para usar pistón:
+    ! call maxz(zmax)
     t=t+h
    
   enddo
@@ -283,23 +279,87 @@ program din_mol_Li
  
 contains
 
-  subroutine mv_reserva(g1, g2, nx) ! Muevo reservorio y agrego partículas
-          ! renombrar: para ver pistón vs. agregado partículas. Extiende el sistema *
+  subroutine entrada()
+    open(15,File='entrada.ini')
+    read(15,*) idum
+    read(15,*) prob
+    read(15,*) h 
+    read(15,*) nst
+    read(15,*) nwr
+    read(15,*) dist 
+    read(15,*) z0 
+    read(15,*) dif_sc 
+    read(15,*) dif_sei 
+    close(15)
+  end subroutine
+
+  subroutine salida()  !Donde escribe los datos calc. :P
+    integer  :: j !Siempre hay que definirlos =O siempre privados
+    real(dp) :: energia
+   
+    energia= 0._dp
+
+    ! Coords. de partíc.
+    write(11,*) sys%nat ! n
+    write(11,*) "info:",zmax,sys%nat
+    do j =1, sys%nat
+     pa=>sys%a(j)%o
+     write(11,*) pa%sym,pa%pos(:),pa%tipo
+
+     ! Para el otro archivo de salida
+     energia= energia + pa%energy 
+    enddo
+
+    ! t, suma Epot+Ecin 
+    write(12,*) t, energia !sum(sys%a(:)%o%energy)
+
+    call kion(sys,temp) 
+    write(13,*)t,temp
+   
+    write(14,*)t,rho
+    flush(14)
+    flush(13)
+    flush(12)
+
+  endsubroutine
+
+  subroutine calc_rho(rho) !Densidad/concentrac.
+    ! Calculada para un volumen considerado reservorio, "debajo" está el sistema, y "encima" está un volumen extra
+    ! de átomos.
+
+    integer::i,g
+    real(dp)::vol,min_vol
+    real(dp),intent(out)::rho
+
+    g=0
+    min_vol=box(1)*box(2)*2.5_dp
+
+    do i=1, sys%nat ! Para contar las partícs. por encima de z0
+     pa=>sys%a(i)%o
+    if (pa%pos(3)>z0.and.pa%pos(3)<z1) then
+      g=g+1
+    endif
+    enddo
+
+    vol=box(1)*box(2)*(z1-z0)
+    rho= g/vol
+  endsubroutine
+
+  subroutine reservas(g1, g2, nx) ! Crece reservorio y agrega partículas
     class(group)    :: g1, g2 
     type(atom_dclist), pointer :: la
     type(atom),pointer        :: o1,o2
-    integer :: j,l,k         ! pierde acceso a la k global
+    integer :: j
     integer, intent(in) :: nx
 
-    ! Criterio para actualizar
-    ! if((rho0-rho)<0.3*rho0) return
+    ! Criterio para actualizar. En base a 4*sigma de desviac. estándar
     if(rho>factor.or.rho<factor2) return
 
     z0 = z0 + dist
     z1 = z1 + dist
     zmax = zmax + dist
 
-    ! copiamos los atomos que estaban en chunk a sys, pero es una copia, por eso el allocate
+    ! copiamos los atomos que estaban en chunk a sys, con allocate
     la=>g2%alist ! apunta al chunk
     do j=1,g2%nat
        la=>la%next
@@ -334,67 +394,17 @@ contains
                      
   endsubroutine
 
-  subroutine salida()  !Donde escribe los datos calc. :P
-    integer  :: j !Siempre hay que definirlos =O siempre privados
-    real(dp) :: energia
-   
-    energia= 0._dp
 
-    ! Coords. de partíc.
-    write(11,*) sys%nat ! n
-    write(11,*) "info:",zmax,sys%nat
-    do j =1, sys%nat
-     pa=>sys%a(j)%o
-     write(11,*) pa%sym,pa%pos(:),pa%tipo
+  ! Para trabajar con pistón
 
-     ! Para el otro archivo de salida
-     energia= energia + pa%energy 
-    enddo
-
-    ! t, suma Epot+Ecin 
-    write(12,*) t, energia !sum(sys%a(:)%o%energy)
-
-    call kion(sys,temp) 
-    write(13,*)t,temp
-   
-    write(14,*)t,rho
-    flush(14)
-    flush(13)
-    flush(12)
-
-  endsubroutine
-
-
-  subroutine set_rho(rho) !Densidad/concentrac.
-    ! Calculada para un volumen considerado reservorio, "debajo" está el sistema, y "encima" está un volumen extra
-    ! de átomos.
-
-    integer::i,g
-    real(dp)::vol,min_vol
-    real(dp),intent(out)::rho
-
-    g=0
-    min_vol=box(1)*box(2)*2.5_dp
-
-    do i=1, sys%nat !Esto debería contar las partícs. por encima de z0
-     pa=>sys%a(i)%o
-    if (pa%pos(3)>z0.and.pa%pos(3)<z1) then
-      g=g+1
-    endif
-    enddo
-
-    vol=box(1)*box(2)*(z1-z0)
-    rho= g/vol
-  endsubroutine
-
-  subroutine maxz(zmax) !Ajusta caja con el mov. de partícs.
-    ! Ajusta el "máximo absoluto" en z de la caja de simulación
+  ! Ajusta el "máximo absoluto" en z de la caja de simulación con el mov. de partícs.
+  subroutine maxz(zmax) 
     real(dp)::lohi !Like a valley/bird in the sky
     real(dp),intent(inout)::zmax
     integer::i
 
-    lohi= ((h/tau)*((rho0-rho)/rho)) !El factor para corregir zmax y las a(i)%pos(3) de las que estén sobre z0
-    ! print *, rho0-rho
+    !El factor para corregir zmax y las pos(3) de las que estén sobre z0
+    lohi= ((h/tau)*((rho0-rho)/rho)) 
    
     do i=1, sys%nat
      pa=>sys%a(i)%o
@@ -405,10 +415,9 @@ contains
 
   endsubroutine
 
-
   subroutine set_sym(a,z) !Asigna tipo a partíc.
     !integer,intent(in)         :: i
-    character(*),intent(in)    :: z
+    character(*),intent(in)     :: z
     class(atom)                 :: a
 
     if(i>n) then ! ¿o sys%nat?
@@ -434,27 +443,27 @@ contains
 
   end subroutine
 
+
 ! Integrac. browniana
 
-subroutine cbrownian_hs(g,h,prob,Tsist)
+subroutine cbrownian_hs(g,h,prob)
 class(ngroup)              :: g
 type(atom), pointer        :: o1, o2 
 type(atom_dclist), pointer :: la 
-real(dp),intent(in)        :: h,Tsist,prob
-real(dp)                   :: fac1, fac2, r1, posold, ne, vd(3), dr
+real(dp),intent(in)        :: h,prob
+real(dp)                   :: fac1, r1, posold, ne, vd(3), dr
 integer                    :: i,j,ii,jj
-
 
 la => g%ref%alist
 do ii = 1,g%ref%nat
   la => la%next
   o1 => la%o 
 
-  ! Para cambio en coef. difusión SEI-SC
+  ! Para cambio en coef. difusión SC-SEI
   if (o1%pos(3)>80._dp) then
-     dif=250e1
+     dif= dif_sc
   else
-     dif=250._dp
+     dif= dif_sei
   endif
 
   ! TODO: chequear sea el algoritmo de mayers
@@ -484,14 +493,12 @@ do ii = 1,g%ref%nat
          o1%pos_old(j)=o1%pos_old(j)+box(j)
       endif
 
-      ! En una componente (xt - x0)**2
+      ! En una componente (xt - x0)**2 -- mean square displacement
       msd_u= o1%vel(j) * o1%vel(j) * h * h
       msd_t= msd_t + msd_u
     else 
       ! Rebote en zmax
       if(o1%pos(j)>zmax) then
-      !   o1%pos(3)=o1%pos(3)-2*(o1%pos(3)-zmax)
-      !   o1%vel(3)=-o1%vel(3)   !También cambio el signo de la componente de la vel. ;)
       o1%pos(:)= o1%old_cg(:) 
       endif
     endif
@@ -596,109 +603,109 @@ skt=sqrt(kB_ui*Tsist)
 
 endsubroutine
 
-! subroutine ermak_a(g,ranv) !Actualiza posic.
-!
-! ! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263.
-! class(group)    :: g
-! type(atom_dclist), pointer :: la 
-! type(atom), pointer        :: o1 
-! real(dp),intent(out)          :: ranv(n,3)
-! real(dp)                      :: r1 ,r2, ranr, ne
-! integer                       :: i,j
-!
-! la => g%alist
-!
-! do i = 1,g%nat
-!   la => la%next
-!   o1 => la%o 
-!
-!   !Si ya está congelada, ni le calcula una nueva posic ;)
-!   if (o1%sym=='CG') cycle 
-!
-!   !Para luego ver congelam.
-!   o1%old_cg(:)=o1%pos(:)
-!  
-!   do j = 1, 3
-!     r1=gasdev()
-!     ranr = skt/sqrt(o1%m)*sdr*r1
-!     o1%pos(j) = o1%pos(j) + cc1*o1%vel(j) + cc2*h*o1%acel(j) + ranr
-!
-!     !P/ que Li pueda congelarse, o que siga al rebote
-!     if (o1%sym/='CG')then 
-!       if(o1%pos(3)<1._dp) then !No importa si < o <=
-!     
-!          ne=ran(idum)
-!          write (15,*) 'llamada a ran ermak a'
-!          if(ne<prob) then
-!              if(o1%sym=='Li') then
-!                call o1%setz('CG') !Le dice que se congele ;) La sub-r. lee el CG-set_sym(o1,'CG')
-!                o1%pos(3)=1._dp
-!                call list%addref(o1) 
-!                cycle !Cicla el do más cercano
-!              endif
-!
-!          else !Acá rechazo el congelamiento y rebota
-!      
-!              o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
-!              o1%vel(3)=-o1%vel(3)
-!
-!          endif
-!       endif
-!     endif
-!
-!     ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                      
-!     r2=gasdev()
-!     ranv(i,j) = skt/sqrt(o1%m)*sdv*(crv1*r1+crv2*r2)
-!
-!     !Pongo condiciones de caja
-!     if(j<3) then
-!       if (o1%pos(j)>box(j)) o1%pos(j)= o1%pos(j)-box(j)
-!       if (o1%pos(j)<o) o1%pos(j)= o1%pos(j)+box(j)
-!       
-!       !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
-!     else  
-!
-!       if(o1%pos(j)>zmax) then
-!         o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
-!         o1%vel(3) = -o1%vel(3)
-!       endif
-!
-!       if(o1%pos(j)<1._dp) then
-!         o1%pos(3) = o1%pos(3) + 2*(1._dp - o1%pos(3))
-!         o1%vel(3) = -o1%vel(3)
-!       endif
-!
-!     endif
-!
-!   enddo
-!
-! enddo
-!                                                                                             
-! end subroutine   
+!Actualiza posic.
+subroutine ermak_a(g,ranv) 
+
+! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263. Ed. vieja
+class(group)    :: g
+type(atom_dclist), pointer :: la 
+type(atom), pointer        :: o1 
+real(dp),intent(out)       :: ranv(:,:)
+real(dp)                   :: r1 ,r2, ranr, ne
+integer                    :: i,j
+
+la => g%alist
+
+do i = 1,g%nat
+  la => la%next
+  o1 => la%o 
+
+  !Si ya está congelada, ni le calcula una nueva posic ;)
+  if (o1%sym=='CG') cycle 
+
+  !Para luego ver congelam.
+  o1%old_cg(:)=o1%pos(:)
+ 
+  do j = 1, 3
+    r1=gasdev()
+    ranr = skt/sqrt(o1%m)*sdr*r1
+    o1%pos(j) = o1%pos(j) + cc1*o1%vel(j) + cc2*h*o1%acel(j) + ranr
+
+    !P/ que Li pueda congelarse, o que siga al rebote
+    if (o1%sym/='CG')then 
+      if(o1%pos(3)<=0._dp) then 
+    
+         ne=ran(idum)
+         if(ne<prob) then
+             if(o1%sym=='Li') then
+               call o1%setz('CG') !Le dice que se congele ;)
+               o1%pos(3)=1._dp ! REVISAR comparado con HS
+               call list%addref(o1) 
+               cycle !Cicla el do más cercano
+             endif
+
+         else !Acá rechazo el congelamiento y rebota
+     
+             o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
+             o1%vel(3)=-o1%vel(3)
+
+         endif
+      endif
+    endif
+
+    ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                      
+    r2=gasdev()
+    ranv(i,j) = skt/sqrt(o1%m)*sdv*(crv1*r1+crv2*r2)
+
+    !Pongo condiciones de caja
+    if(j<3) then
+      if (o1%pos(j)>box(j)) o1%pos(j)= o1%pos(j)-box(j)
+      if (o1%pos(j)<o) o1%pos(j)= o1%pos(j)+box(j)
+      
+      !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
+    else  
+
+      if(o1%pos(j)>zmax) then
+        o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
+        o1%vel(3) = -o1%vel(3)
+      endif
+
+      if(o1%pos(j)<0._dp) then
+        o1%pos(3) = o1%pos(3) + 2*(1._dp - o1%pos(3))
+        o1%vel(3) = -o1%vel(3)
+      endif
+
+    endif
+
+  enddo
+
+enddo
+                                                                                            
+end subroutine   
 
 
 ! calcula veloc 
-! subroutine ermak_b(g,ranv)
-! class(group)               :: g
-! type(atom), pointer        :: o1 
-! type(atom_dclist), pointer :: la 
-! real(dp),intent(in)        :: ranv(n,3)
-! integer                    :: i
-!
-! la => g%alist
-!
-! do i = 1,g%nat
-!   la => la%next
-!   o1 => la%o 
-!  
-!   if(o1%sym=='CG') cycle !Así se ahorra un cálculo
-!
-!   o1%vel(:) = cc0*o1%vel(:) + (cc1-cc2)*o1%acel(:) + cc2*o1%force(:)/o1%m + ranv(i,:)
-!   o1%acel(:)=o1%force(:)/o1%m
-!
-! enddo
-!
-! end subroutine
+subroutine ermak_b(g,ranv)
+class(group)               :: g
+type(atom), pointer        :: o1 
+type(atom_dclist), pointer :: la 
+real(dp),intent(in)        :: ranv(:,:)
+integer                    :: i
+
+la => g%alist
+
+do i = 1,g%nat
+  la => la%next
+  o1 => la%o 
+ 
+  if(o1%sym=='CG') cycle !Así se ahorra un cálculo
+
+  o1%vel(:) = cc0*o1%vel(:) + (cc1-cc2)*o1%acel(:) + cc2*o1%force(:)/o1%m + ranv(i,:)
+  o1%acel(:)=o1%force(:)/o1%m
+
+enddo
+
+end subroutine
 
 
 subroutine kion(g,temp)
@@ -736,8 +743,8 @@ subroutine kion(g,temp)
 
 endsubroutine
 
-
-subroutine fuerza(g,eps,r0) ! según LJ
+! Fuerzas - potencial LJ
+subroutine fuerza(g,eps,r0) 
 class(group)    :: g
 type(atom), pointer        :: o1, o2 
 type(atom_dclist), pointer :: la 
