@@ -45,9 +45,10 @@ program din_mol_Li
   real(dp)            :: dist, rhomedia, cstdev, factor, factor2
 
   ! Esto es para Ermak
-  real(dp)            :: cc0,cc1,cc2
-  real(dp)            :: sdr,sdv,skt
-  real(dp)            :: crv1,crv2
+  logical      :: ermak 
+  real(dp)            :: cc0,cc1,cc2, cc0_sei,cc1_sei,cc2_sei, cc0_sc,cc1_sc,cc2_sc
+  real(dp)            :: sdr,sdv, sdr_sei,sdv_sei, sdr_sc,sdv_sc, skt
+  real(dp)            :: crv1,crv2, crv1_sei,crv2_sei, crv1_sc,crv2_sc
   real(dp),allocatable:: ranv(:,:)!,a(:)%acel(:) !de usar esto también hay que hacer allocatable
 
   ! Grupos varios
@@ -210,6 +211,8 @@ program din_mol_Li
     ! Da un paso #wii
 
     ! Para trabajar con din. Langevin
+    ! call set_ermak(h,gama_sc,Tsist)
+    ! call set_ermak(h,gama_sei,Tsist)
     ! call ermak_a(a,ranv) ! revisar declaración de ranv
     ! call fuerza(a,r0)
     ! call ermak_b(a,ranv)
@@ -453,11 +456,15 @@ type(atom_dclist), pointer :: la
 real(dp),intent(in)        :: h,prob
 real(dp)                   :: fac1, r1, posold, ne, vd(3), dr
 integer                    :: i,j,ii,jj
+logical                    :: depos
 
 la => g%ref%alist
 do ii = 1,g%ref%nat
   la => la%next
   o1 => la%o 
+
+  !Para luego ver congelam.
+  o1%old_cg(:)=o1%pos(:)
 
   ! Para cambio en coef. difusión SC-SEI
   if (o1%pos(3)>80._dp) then
@@ -469,11 +476,7 @@ do ii = 1,g%ref%nat
   ! TODO: chequear sea el algoritmo de mayers
   fac1 = sqrt(2._dp*dif*h) 
 
-  !Para luego ver congelam.
-  o1%old_cg(:)=o1%pos(:)
-
   do j = 1,3
-
     r1=gasdev()
   
     posold = o1%pos(j)
@@ -481,87 +484,16 @@ do ii = 1,g%ref%nat
 
     ! Velocidad derivada de euler para atras
     o1%vel(j) = (o1%pos(j)-posold)/h
-
-    if(j<3) then
-      ! PBC en x e y
-      if (o1%pos(j)>box(j)) then
-         o1%pos(j)=o1%pos(j)-box(j)
-         o1%pos_old(j)=o1%pos_old(j)-box(j)
-      endif  
-      if (o1%pos(j)<o) then
-         o1%pos(j)=o1%pos(j)+box(j)
-         o1%pos_old(j)=o1%pos_old(j)+box(j)
-      endif
-
-      ! En una componente (xt - x0)**2 -- mean square displacement
-      msd_u= o1%vel(j) * o1%vel(j) * h * h
-      msd_t= msd_t + msd_u
-    else 
-      ! Rebote en zmax
-      if(o1%pos(j)>zmax) then
-      o1%pos(:)= o1%old_cg(:) 
-      endif
-    endif
-
   enddo
+
+  call atom_pbc(o1, depos)
+  ! Para no calcular choques si depositó
+  if (depos) cycle
 
   max_vel=max(max_vel,dot_product(o1%vel,o1%vel))
 
+  call atom_hs_choque(o1, g)
  
-  ! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
-  if(o1%pos(3)<=0._dp) then 
-    ne=ran(idum)
-    if(ne<prob) then
-      call o1%setz('F')   ! Es inerte en este paso de tiempo
-      ! o1%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
-    endif
-
-    o1%pos(:) = o1%old_cg(:) 
-    cycle
-  endif
-
-
-  ! Choque con las demas particulas
-  i = o1%gid(g)
-  do jj = 1, g%nn(i)  ! sobre los vecinos
-
-    j = g%list(i,jj)
-    o2 => g%a(j)%o
- 
-    vd(:) = vdistance(o1,o2,.true.)
-    dr = dot_product(vd,vd)
-
-    if(dr>g%rcut2) cycle !Sí es necesario :B
-
-    ! Deposicion por contacto con otra particula metalica
-    ! 1.19 es el radio de Mayers
-    if (o2%tipo==2) then
-      if(dr> 1.4161_dp) cycle
-      
-      ne=ran(idum)
-      if(ne<prob) then
-        call o1%setz('F')   ! Es inerte en este paso de tiempo
-        !call o2%setz('CG') 
-        ! Permite deposicion en cadena pero depende del atom id.
-        ! Si queremos deposicion en cadnea sería mejor programarla
-        ! para que no dependa de el orden en que se ejecuta el do.
-        if (o1%pos(3)>z0) then
-                print*,'supero z0', o1%pos(3)
-                stop ! raro 
-        endif
-      else
-
-        o1%pos(:)= o1%old_cg(:) 
-      endif
-
-      exit
-
-    endif
-
-    o1%pos(:)= o1%old_cg(:) 
-    exit
-  enddo
-
 enddo
 
 msd_t= msd_t/g%nat
@@ -579,108 +511,224 @@ enddo
                
 end subroutine
 
-! Integrac. Langevin
+subroutine atom_hs_choque(o1, g)
+class(atom)     :: o1
+class(atom),pointer :: o2
+class(ngroup)   :: g
+real(dp)          :: ne, vd(3), dr
+integer         :: i, j, jj
 
-subroutine set_ermak(h,gama,Tsist) !Constantes p/ Ermak
+! Choque con las demas particulas
+i = o1%gid(g)
+do jj = 1, g%nn(i)  ! sobre los vecinos
+
+  j = g%list(i,jj)
+  o2 => g%a(j)%o
+
+  vd(:) = vdistance(o1,o2,.true.)
+  dr = dot_product(vd,vd)
+
+  if(dr>g%rcut2) cycle !Sí es necesario :B
+
+  ! Deposicion por contacto con otra particula metalica
+  ! 1.19 es el radio de Mayers
+  if (o2%tipo==2) then
+    if(dr> 1.4161_dp) cycle
+    
+    ne=ran(idum)
+    if(ne<prob) then
+      call o1%setz('F')   ! Es inerte en este paso de tiempo
+
+      ! Permite deposicion en cadena pero depende del atom id.
+      ! Si queremos deposicion en cadnea sería mejor programarla
+      ! para que no dependa de el orden en que se ejecuta el do.
+      if (o1%pos(3)>z0) then
+         print*,'supero z0', o1%pos(3)
+         stop ! raro 
+      endif
+    else
+      o1%pos(:)= o1%old_cg(:) 
+    endif
+
+    exit
+
+  endif
+
+  ! Esto pasa si es tipo==1 y están bajo rcut
+  o1%pos(:)= o1%old_cg(:) 
+  exit
+enddo
+end subroutine
+
+subroutine atom_pbc(o1, depos)
+class(atom) :: o1
+integer :: j
+real(dp) :: ne
+logical :: depos
+
+depos= .false.
+
+do j=1, 3
+  if(j<3) then
+    ! PBC en x e y
+    if (o1%pos(j)>box(j)) then
+       o1%pos(j)=o1%pos(j)-box(j)
+       o1%pos_old(j)=o1%pos_old(j)-box(j)
+    endif  
+    if (o1%pos(j)<o) then
+       o1%pos(j)=o1%pos(j)+box(j)
+       o1%pos_old(j)=o1%pos_old(j)+box(j)
+    endif
+
+    ! En una componente (xt - x0)**2 -- mean square displacement
+    msd_u= o1%vel(j) * o1%vel(j) * h * h
+    msd_t= msd_t + msd_u
+  else 
+    ! Rebote en zmax
+    if(o1%pos(j)>zmax) then
+    o1%pos(:)= o1%old_cg(:) 
+
+    ! versión vieja-ermak
+    ! o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
+    ! o1%vel(3) = -o1%vel(3)
+    endif
+  endif
+end do
+
+! Versión vieja:
+! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
+! if(o1%pos(3)<=0._dp) then 
+!   ne=ran(idum)
+! 
+!   if(ne<prob) then
+!     call o1%setz('CG') !Le dice que se congele ;)
+!     call g%ref%detach(o1)
+!     o1%pos(3)=0._dp 
+!     cycle !Cicla el do más cercano
+! 
+!   else !Acá rechazo el congelamiento y rebota
+! 
+!     o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
+!     o1%vel(3)=-o1%vel(3)
+! 
+!   endif
+! endif
+
+
+! Para cbrownian+HS
+! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
+if(o1%pos(3)<=0._dp) then 
+  ne=ran(idum)
+
+  if(ne<prob) then
+    call o1%setz('F')   ! Es inerte en este paso de tiempo
+    ! o1%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
+  endif
+
+  o1%pos(:) = o1%old_cg(:)
+  depos= .true.
+endif
+end subroutine
+
+! Integrac. Langevin
+! Constantes p/ Ermak
+subroutine set_ermak(h,gama,Tsist) 
+real(dp),intent(in)  ::h,gama,Tsist
+!real(dp),intent(out) ::gama ! ¿?
+
 !En libro: xi=kB*T/m*D=gama
-real(dp),intent(in)::h,gama,Tsist !Acá irían dist. gama
+! Para cambio en coef. difusión SC-SEI
+! gama_sc
+! gama_sei
+! arreglar para hacer el llamado dos veces, con dist. parámetros de entrada (gama_ sc y gama_sei) y salida etc
 
 !Calcula las ctes.
-cc0=exp(-h*gama)
-cc1=(1._dp-cc0)/gama
-cc2=(1._dp-cc1/h)/gama
+cc0_sc= exp(-h*gama)
+cc1_sc= (1._dp-cc0)/gama
+cc2_sc= (1._dp-cc1/h)/gama
+cc0_sei= exp(-h*gama)
+cc1_sei= (1._dp-cc0)/gama
+cc2_sei= (1._dp-cc1/h)/gama
 
 !Desv. estándar
-sdr=sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0+cc0*cc0)/(h*gama)))
-sdv=sqrt(1._dp-cc0*cc0)
+sdr_sc= sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0_sc+cc0_sc*cc0_sc)/(h*gama)))
+sdv_sc= sqrt(1._dp-cc0_sc*cc0_sc)
+sdr_sei= sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0_sei+cc0_sei*cc0_sei)/(h*gama)))
+sdv_sei= sqrt(1._dp-cc0_sei*cc0_sei)
 
 !Acá calcula el coef. de correlac. posic.-vel.
-crv1=(1._dp-cc0)*(1._dp-cc0)/(gama*sdr*sdv)
-crv2=sqrt(1._dp-(crv1*crv1))
+crv1_sc= (1._dp-cc0_sc)*(1._dp-cc0_sc)/(gama*sdr_sc*sdv_sc)
+crv2_sc= sqrt(1._dp-(crv1_sc*crv1_sc))
+crv1_sei= (1._dp-cc0_sei)*(1._dp-cc0_sei)/(gama*sdr_sei*sdv_sei)
+crv2_sei= sqrt(1._dp-(crv1_sei*crv1_sei))
 
 !Un factor útil :P/para la rutina que sigue
 skt=sqrt(kB_ui*Tsist)
 
 endsubroutine
 
-!Actualiza posic.
+!Actualiza posic., din. Langevin
+
 subroutine ermak_a(g,ranv) 
 
 ! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263. Ed. vieja
-class(group)    :: g
-type(atom_dclist), pointer :: la 
+class(ngroup)    :: g
 type(atom), pointer        :: o1 
+type(atom_dclist), pointer :: la 
 real(dp),intent(out)       :: ranv(:,:)
 real(dp)                   :: r1 ,r2, ranr, ne
 integer                    :: i,j
+logical                    :: depos
 
-la => g%alist
-
-do i = 1,g%nat
+la => g%ref%alist
+do i = 1,g%ref%nat
   la => la%next
   o1 => la%o 
-
-  !Si ya está congelada, ni le calcula una nueva posic ;)
-  if (o1%sym=='CG') cycle 
 
   !Para luego ver congelam.
   o1%old_cg(:)=o1%pos(:)
  
+  ! Para cambio SC-SEI
+  if (o1%pos(3)>80._dp) then
+     cc1= cc1_sc
+     cc2= cc2_sc
+     crv1= crv1_sc
+     crv2= crv2_sc
+  else
+     cc1= cc1_sei
+     cc2= cc2_sei
+     crv1= crv1_sei
+     crv2= crv2_sei
+  endif
+
   do j = 1, 3
     r1=gasdev()
+
     ranr = skt/sqrt(o1%m)*sdr*r1
     o1%pos(j) = o1%pos(j) + cc1*o1%vel(j) + cc2*h*o1%acel(j) + ranr
-
-    !P/ que Li pueda congelarse, o que siga al rebote
-    if (o1%sym/='CG')then 
-      if(o1%pos(3)<=0._dp) then 
-    
-         ne=ran(idum)
-         if(ne<prob) then
-             if(o1%sym=='Li') then
-               call o1%setz('CG') !Le dice que se congele ;)
-               o1%pos(3)=1._dp ! REVISAR comparado con HS
-               call list%addref(o1) 
-               cycle !Cicla el do más cercano
-             endif
-
-         else !Acá rechazo el congelamiento y rebota
-     
-             o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
-             o1%vel(3)=-o1%vel(3)
-
-         endif
-      endif
-    endif
-
+  
     ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                      
     r2=gasdev()
     ranv(i,j) = skt/sqrt(o1%m)*sdv*(crv1*r1+crv2*r2)
+  end do
 
-    !Pongo condiciones de caja
-    if(j<3) then
-      if (o1%pos(j)>box(j)) o1%pos(j)= o1%pos(j)-box(j)
-      if (o1%pos(j)<o) o1%pos(j)= o1%pos(j)+box(j)
-      
-      !Con el else veo en z;es para que en z rebote en zmax, y no atraviese capa CG
-    else  
-
-      if(o1%pos(j)>zmax) then
-        o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
-        o1%vel(3) = -o1%vel(3)
-      endif
-
-      if(o1%pos(j)<0._dp) then
-        o1%pos(3) = o1%pos(3) + 2*(1._dp - o1%pos(3))
-        o1%vel(3) = -o1%vel(3)
-      endif
-
-    endif
-
-  enddo
-
+  call atom_pbc(o1, depos) ! ver de seleccionar forma de CG sobre electrodo
+  ! Para no calcular choques si depositó
+  if (depos) cycle
+  call atom_hs_choque(o1, g)
+  ! probar, luego ver sino si usar knock
 enddo
                                                                                             
+! Add new CG to the ref group
+la=> g%ref%alist
+do i = 1, g%ref%nat
+  la=> la%next
+  o1=> la%o
+  if (o1%sym/='F') cycle
+  call o1%setz('CG')
+  call g%ref%detach(o1)
+enddo
+
 end subroutine   
 
 
@@ -788,7 +836,7 @@ do i = 1, g%nat-1
       ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
     enddo
 
-    if(o2%sym=='CG'.and.o1%sym=='CG') cycle
+    if(o2%sym=='CG'.and.o1%sym=='CG') cycle ! REVISAR
 
     dr = dot_product(vd,vd)
 
@@ -821,7 +869,8 @@ enddo
 
 end subroutine fuerza
 
-subroutine knock(list) ! Rebote brusco
+! Deposic. sobre Li ya depositado, sino, rebote brusco
+subroutine knock(list) 
 type(ngroup)              :: list
 real(dp)                  :: ne,vd(3),dr
 integer                   :: i,ii,j,jj,l 
@@ -868,7 +917,9 @@ do ii = 1,list%ref%nat
 
     else
 
-      ! Retorno la partícula a la solución
+      ! FIXME
+      ! Retorno la partícula a la solución-esto es una falla u.u
+      ! Podrían superponerse partícs. al retroceder...
       ! Igual que Mayers
       o2%pos(:)= o2%old_cg(:) 
 
