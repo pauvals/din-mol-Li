@@ -17,6 +17,7 @@
 
 
 module gems_groups
+use gems_errors, only:werr
 use gems_constants,only:sp,dp,dm
 
 implicit none
@@ -182,6 +183,12 @@ type, extends(group), public :: igroup
 
   ! The array of pointers.
   type(atom_ap),allocatable :: a(:)
+
+  ! Efective dimension of `a` (nat<amax<size(a)).
+  integer                 :: amax=0 
+
+  ! Control index update
+  real(dp)                :: aupd=0.1
     
   ! The growth speed for reallocation
   integer                 :: pad=100
@@ -196,8 +203,9 @@ type, extends(group), public :: igroup
   procedure :: init => igroup_construct
   procedure :: dest => igroup_destroy
 
-  procedure :: attach_atom => igroup_attach_atom
-  procedure :: detach_atom => igroup_detach_atom
+  procedure :: attach_atom  => igroup_attach_atom
+  procedure :: detach_atom  => igroup_detach_atom
+  procedure :: update_index => igroup_update_index
                                  
 end type igroup
 
@@ -496,6 +504,8 @@ class(group),target :: g
 ! Init atom list
 allocate(g%alist)
 call g%alist%init()
+
+! Set defaults  
 g%nat = 0
 
 ! Init head para acciones agrupadas
@@ -779,11 +789,24 @@ if(n<g%nat) then
   t_a(1:n) = g%a(1:n)
   call move_alloc(to=g%a,from=t_a)
 endif
-              
-! Index new atom
-g%a(g%nat)%o=>a
-a%id(a%ngr)=g%nat
+   
+! Find an index position
+if(g%amax<g%nat) then 
+  ! Append
+  g%amax=g%amax+1
+  n=g%amax
+  call werr('Index inconsistency while attaching',g%nat/=g%amax)
+else 
+  ! Find index of previous deattached atom
+  do n=1,g%amax
+    if(.not.associated(g%a(n)%o)) exit
+  enddo
+endif
  
+! Set atom index
+g%a(n)%o=>a
+a%id(a%ngr)=n
+
 end subroutine igroup_attach_atom
            
 ! Remove atoms
@@ -793,30 +816,56 @@ subroutine igroup_detach_atom(g,a)
 ! Remove soft atom (i.e. detach) from `alist` and `a`
 class(igroup)              :: g
 class(atom),target         :: a
-class(atom),pointer        :: aj
-integer                    :: i,j,k
+integer                    :: i
  
 ! Search index of `a`
 i=a%gid(g)
 if(i==-1) return  
 
-! Update index
-do j=i,g%nat-1
-
-  ! Update atom index in group
-  aj=>g%a(j+1)%o
-  g%a(j)%o=>aj
-
-  ! Update atom id
-  k=aj%gri(g)
-  aj%id(k)=j
-
-enddo
-
+! Nullify index
+g%a(i)%o=>null()
+              
 ! Detach atom
 call group_detach_atom(g,a)
 
+! Update index if "null" count is above a fraction of array size.  
+if ((g%amax-g%nat)>size(g%a)*g%aupd) call igroup_update_index(g)
+
 end subroutine igroup_detach_atom
+     
+subroutine igroup_update_index(g)
+! Update index
+class(igroup)              :: g
+class(atom),pointer        :: a
+integer                    :: i,j,k
+
+if(g%amax==g%nat) return
+
+i=0
+do j=1,g%amax
+  a=>g%a(j)%o
+ 
+  ! Skip detached atoms
+  if(.not.associated(a)) cycle
+          
+  ! Skip if update is not needed
+  i=i+1
+  if(i==j) cycle
+
+  ! Update atom index 
+  g%a(i)%o=>a
+
+  ! Update atom id
+  k=a%gri(g)
+  a%id(k)=i
+
+enddo
+
+call werr('Index inconsistency while updating',g%nat/=i)
+
+g%amax=g%nat
+
+end subroutine igroup_update_index
 
 
 end module gems_groups
