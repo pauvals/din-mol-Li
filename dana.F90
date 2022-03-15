@@ -107,6 +107,8 @@ program din_mol_Li
   !Search neighbors
   call update()
 
+  call fuerza(hs,eps,r0)
+
   ! Calcula rho-densidad reservorio inicial
   call calc_rho(rho)
   rho0=rho
@@ -301,8 +303,6 @@ box(3)=zmax
 ! call set_ermak(h,gama_sc,Tsist,cc0_sc, cc1_sc, cc2_sc, sdr_sc, sdv_sc, crv1_sc, crv2_sc)
 ! call set_ermak(h,gama,Tsist,cc0_sei, cc1_sei, cc2_sei, sdr_sei, sdv_sei, crv1_sei, crv2_sei)
 call set_ermak(h,gama,Tsist,cc0, cc1, cc2, sdr, sdv, crv1, crv2)
-
-call fuerza(hs,eps,r0)
 
 ! la => hs%alist
 ! do i=1, hs%nat !n
