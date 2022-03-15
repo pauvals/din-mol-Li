@@ -45,11 +45,12 @@ program din_mol_Li
   real(dp)            :: dist, rhomedia, cstdev, factor, factor2
 
   ! Esto es para Ermak
-  logical      :: ermak 
-  real(dp)            :: cc0,cc1,cc2, cc0_sei,cc1_sei,cc2_sei, cc0_sc,cc1_sc,cc2_sc
+  logical             :: ermak 
+  real(dp)            :: cc0,cc1,cc2, cc0_sei,cc1_sei,cc2_sei,&
+                         cc0_sc,cc1_sc,cc2_sc
   real(dp)            :: sdr,sdv, sdr_sei,sdv_sei, sdr_sc,sdv_sc, skt
   real(dp)            :: crv1,crv2, crv1_sei,crv2_sei, crv1_sc,crv2_sc
-  real(dp),allocatable:: ranv(:,:)!,a(:)%acel(:) !de usar esto también hay que hacer allocatable
+  real(dp),allocatable:: ranv(:,:)
 
   ! Grupos varios
   type(group)         :: chunk
@@ -89,7 +90,7 @@ program din_mol_Li
   nb_dcut=10._dp         ! The shell length for verlet update criteria
  
   ! Grupo chunk
-  call chunk%init()
+  ! call chunk%init()
  
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
@@ -99,63 +100,9 @@ program din_mol_Li
   ! y otros valores iniciales
   call entrada()
 
-  ! Tamaños iniciales de "reservorio"
-  dist= dist + hs%rcut
-  z1 = z0 + dist
-  zmax = z1 + dist 
-
-  ! Para luego actualizar reservorio
-  rhomedia= 5.775329e-4_dp
-  cstdev= 1.0754306e-4_dp
-  factor= rhomedia - cstdev
-  factor2= rhomedia + cstdev
-  ! 0.000577532941264052= STATS_mean
-  ! 0.000107543058373559= 4*STATS_stddev
-
-  ! Leer configuración inicial
-  ! subrutinar 2
-  open(11,File='posic_inic.xyz')
-  read(11,*) n
-  read(11,*)
-
-  do i=1,n
-
-    ! Allocatea el atomo-como un puntero del tipo 'atom'
-    allocate(pa)
-    call pa%init()
-
-    read(11,*) pa%sym,pa%pos(:),pa%m
-    call pa%setz(pa%sym) ! set_sym(pa,pa%sym) Asigna algunos valores según tipo de átomo
-    pa%force(:)=0._dp
-    pa%pos_old(:)=pa%pos(:)
-
-    ! Agrega atom al sistema (sys)
-    call sys%attach(pa)
-
-    ! Agrego atomos a los grupos 
-    call hs%attach(pa)
-    if (pa%sym=='CG') then
-      call hs%b%attach(pa)
-    else
-      call hs%ref%attach(pa)
-      call hs%b%attach(pa)
-    endif
-
-    ! Set pbc
-    pa%pbc(:)=.true.
-    pa%pbc(3)=.false.
-
-    ! Libero puntero para siguiente allocate
-    pa=>null()
-
-  end do
-  close(11)
-
-  allocate(ranv(n,3))
-
-  ! Set the box
-  box(:)=100._dp
-  box(3)=zmax
+  ! Inicializa tamaño en z de caja simulac., y lee posic. inic.
+  ! de partículas 
+  call config_inic()
 
   !Search neighbors
   call update()
@@ -163,38 +110,11 @@ program din_mol_Li
   ! Calcula rho-densidad reservorio inicial
   call calc_rho(rho)
   rho0=rho
-                      
+  
+
   ! Leer chunk de atoms:
-  ! subrutinar 3
-  open(11,File='chunk.xyz')
-  read(11,*) nchunk
-  read(11,*)
+  ! call config_chunk()
 
-  do j=1,nchunk
-    allocate(pb)
-    call pb%init()
-
-    ! Asigna propiedades al bloque de partículas
-    read(11,*) pb%sym,pb%pos(:),pb%m
-    call pb%setz(pb%sym)
-    pb%force(:)=0._dp
-    pb%pos_old(:)=pb%pos(:)
-
-    ! Como sus posic. en z empiezan en z= 0, las subo en zmax+rcut para cuando
-    ! haya que agregarlas
-    pb%pos(3)=pb%pos(3) + zmax 
-    pb%pos_old(3)=pb%pos(3) + zmax
-
-    ! Agrego un átomo a un grupo chunk
-    call chunk%attach(pb)
-
-    ! Set pbc
-    pb%pbc(:)=.true.
-    pb%pbc(3)=.false.
-
-    pb=>null()
-  enddo
-  close (11)
 
   ! Abro archivos de salida
   open(11,File='Li.xyz')
@@ -211,25 +131,23 @@ program din_mol_Li
     ! Da un paso #wii
 
     ! Para trabajar con din. Langevin
-    ! call set_ermak(h,gama_sc,Tsist)
-    ! call set_ermak(h,gama_sei,Tsist)
-    ! call ermak_a(a,ranv) ! revisar declaración de ranv
-    ! call fuerza(a,r0)
-    ! call ermak_b(a,ranv)
+    call ermak_a(hs,ranv)
     ! Ve si congela o rebota
-    ! call knock(list) ! REVISAR al usar, esto estaba más abajo,
-                        ! pero como va con ermak...
+    ! call knock(hs)
+    call fuerza(hs,eps,r0)
+    call ermak_b(hs,ranv)
 
-    ! Para usar esferas duras
-    ! call cbrownian(sys,h,gama,Tsist)
-    call cbrownian_hs(hs,h,prob)
+    ! Para usar din. Browniana, y "esferas duras"
+    ! call cbrownian_hs(hs,h)
  
     call test_update()
     ! call update()
     
+    ! Calcula cant. de partículas en reservorio o sensor
     call calc_rho(rho)
-    ! Ajuste de tamaño, y cant. de partículas en reservorio
-    call reservas(sys, chunk, nx)
+
+    ! Agrega bloques de partículas
+    ! call reservas(sys, chunk, nx, rho)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -242,8 +160,9 @@ program din_mol_Li
     ! Timing information
     call timer_dump(i,nup=nupd_vlist)
   
-    ! Para usar pistón:
-    ! call maxz(zmax)
+    ! Para usar reservorio-pistón:
+    call maxz(zmax)
+
     t=t+h
    
   enddo
@@ -282,180 +201,321 @@ program din_mol_Li
  
 contains
 
-  subroutine entrada()
-    open(15,File='entrada.ini')
-    read(15,*) idum
-    read(15,*) prob
-    read(15,*) h 
-    read(15,*) nst
-    read(15,*) nwr
-    read(15,*) dist 
-    read(15,*) z0 
-    read(15,*) dif_sc 
-    read(15,*) dif_sei 
-    close(15)
-  end subroutine
+subroutine entrada()
+  open(15,File='entrada.ini')
+  read(15,*) idum
+  read(15,*) prob
+  read(15,*) h 
+  read(15,*) nst
+  read(15,*) nwr
+  read(15,*) dist 
+  read(15,*) z0 
+  read(15,*) dif_sc 
+  read(15,*) dif_sei 
+  close(15)
+end subroutine entrada
 
-  subroutine salida()  !Donde escribe los datos calc. :P
-    integer  :: j !Siempre hay que definirlos =O siempre privados
-    real(dp) :: energia
-   
-    energia= 0._dp
+! Leer configuración inicial
+subroutine config_inic()
+integer :: i
+type(atom_dclist), pointer :: la
 
-    ! Coords. de partíc.
-    write(11,*) sys%nat ! n
-    write(11,*) "info:",zmax,sys%nat
-    do j =1, sys%nat
-     pa=>sys%a(j)%o
-     write(11,*) pa%sym,pa%pos(:),pa%tipo
+! Tamaños iniciales de "reservorio"
+! Al usar chunk con sensor
+! dist= dist + hs%rcut
+! z1 = z0 + dist
+! zmax = z1 + dist 
 
-     ! Para el otro archivo de salida
-     energia= energia + pa%energy 
-    enddo
+! Al usar pistón
+zmax= 200._dp
 
-    ! t, suma Epot+Ecin 
-    write(12,*) t, energia !sum(sys%a(:)%o%energy)
+! Para luego actualizar reservorio
+rhomedia= 5.775329e-4_dp
+cstdev= 1.0754306e-4_dp
+factor= rhomedia - cstdev
+factor2= rhomedia + cstdev
+! 18.6211140525501
+! 0.000577532941264052= STATS_mean
+! 0.000107543058373559= 4*STATS_stddev
 
-    call kion(sys,temp) 
-    write(13,*)t,temp
-   
-    write(14,*)t,rho
-    flush(14)
-    flush(13)
-    flush(12)
+open(11,File='posic_inic.xyz')
+read(11,*) n
+read(11,*)
 
-  endsubroutine
+do i=1,n
 
-  subroutine calc_rho(rho) !Densidad/concentrac.
-    ! Calculada para un volumen considerado reservorio, "debajo" está el sistema, y "encima" está un volumen extra
-    ! de átomos.
+  ! Allocatea el atomo-como un puntero del tipo 'atom'
+  allocate(pa)
+  call pa%init()
 
-    integer::i,g
-    real(dp)::vol,min_vol
-    real(dp),intent(out)::rho
+  read(11,*) pa%sym,pa%pos(:),pa%m
+  call pa%setz(pa%sym) ! Asigna algunos valores según tipo de átomo
+  pa%force(:)=0._dp
+  pa%pos_old(:)=pa%pos(:)
 
-    g=0
-    min_vol=box(1)*box(2)*2.5_dp
+  ! Agrega atom al sistema (sys)
+  call sys%attach(pa)
 
-    do i=1, sys%nat ! Para contar las partícs. por encima de z0
-     pa=>sys%a(i)%o
-    if (pa%pos(3)>z0.and.pa%pos(3)<z1) then
-      g=g+1
-    endif
-    enddo
+  ! Agrego atomos a los grupos 
+  call hs%attach(pa)
+  if (pa%sym=='CG') then
+    call hs%b%attach(pa)
+  else
+    call hs%ref%attach(pa)
+    call hs%b%attach(pa)
+  endif
 
-    vol=box(1)*box(2)*(z1-z0)
-    rho= g/vol
-  endsubroutine
+  ! Set pbc
+  pa%pbc(:)=.true.
+  pa%pbc(3)=.false.
 
-  subroutine reservas(g1, g2, nx) ! Crece reservorio y agrega partículas
-    class(group)    :: g1, g2 
-    type(atom_dclist), pointer :: la
-    type(atom),pointer        :: o1,o2
-    integer :: j
-    integer, intent(in) :: nx
+  ! Libero puntero para siguiente allocate
+  pa=>null()
 
-    ! Criterio para actualizar. En base a 4*sigma de desviac. estándar
-    if(rho>factor.or.rho<factor2) return
+end do
+close(11)
 
-    z0 = z0 + dist
-    z1 = z1 + dist
-    zmax = zmax + dist
+allocate(ranv(n,3))
 
-    ! copiamos los atomos que estaban en chunk a sys, con allocate
-    la=>g2%alist ! apunta al chunk
-    do j=1,g2%nat
-       la=>la%next
-       o1=> la%o
-       allocate(o2)
-       call o2%init()
-       call g1%attach(o2) ! Sys
+! Set the box
+box(:)=100._dp
+box(3)=zmax
 
-       ! Lista de vecinos
-       call hs%attach(o2)
-       call hs%b%attach(o2)
-       call hs%ref%attach(o2)
+! Calculo la velocidad neta del sistema/Sino como que se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
+! internas ;)
+! do k=1,3
+!   vm(k)=sum(pa%pos(k)-pa%pos_old(k))/n
+! enddo
 
-       ! TODO: call wwan("Posibilidad de colision",o1%pos(3)<hs%rcut)
-       ! Si vos cambias el rcut, esto te va a hacer acordar de crear un nuevo chunk.
+! Sustraer la velocidad neta
+! do i=1,n
+!   pa%pos_old(i)=pa%pos_old(i)-vm(:)
+! end do
 
-       ! Nuevas partícs. reciben props. de otras ya existentes 
-       call atom_asign(o2, o1)
-       o2%pbc(:) = o1%pbc(:)
-       o2=>null()
+!calculo vel. inic.
+! pa%vel(:)=(pa%pos(:)-pa%pos_old(:))/h
 
-       ! y actualiza altura del chunk
-       o1%pos(3)=o1%pos(3)+ dist 
-       o1%pos_old(3)=o1%pos_old(3)+ dist
-    enddo
+! Para trabajar con din. Langevin
 
-    n= n + nx 
+! Valores inic. de las ctes. de Ermak
+! call set_ermak(h,gama_sc,Tsist,cc0_sc, cc1_sc, cc2_sc, sdr_sc, sdv_sc, crv1_sc, crv2_sc)
+! call set_ermak(h,gama,Tsist,cc0_sei, cc1_sei, cc2_sei, sdr_sei, sdv_sei, crv1_sei, crv2_sei)
+call set_ermak(h,gama,Tsist,cc0, cc1, cc2, sdr, sdv, crv1, crv2)
+
+call fuerza(hs,eps,r0)
+
+! la => hs%alist
+! do i=1, hs%nat !n
+!   la => la%next
+!   pa => la%o
+!   pa%acel(:)=pa%force(:)/pa%m
+! enddo
+
+end subroutine config_inic
+
+! Leer chunk de atoms:
+subroutine config_chunk()
+integer :: j
+
+open(11,File='chunk.xyz')
+read(11,*) nchunk
+read(11,*)
+
+do j=1,nchunk
+  allocate(pb)
+  call pb%init()
+
+  ! Asigna propiedades al bloque de partículas
+  read(11,*) pb%sym,pb%pos(:),pb%m
+  call pb%setz(pb%sym)
+  pb%force(:)=0._dp
+  pb%pos_old(:)=pb%pos(:)
+
+  ! Como sus posic. en z empiezan en z= 0, las subo en zmax+rcut para cuando
+  ! haya que agregarlas
+  pb%pos(3)=pb%pos(3) + zmax 
+  pb%pos_old(3)=pb%pos(3) + zmax
+
+  ! Agrego un átomo a un grupo chunk
+  call chunk%attach(pb)
+
+  ! Set pbc
+  pb%pbc(:)=.true.
+  pb%pbc(3)=.false.
+
+  pb=>null()
+enddo
+close (11)
+
+end subroutine config_chunk
+
+subroutine salida()  ! Escribe los datos calc. :P
+  integer  :: j !Siempre hay que definirlos =O siempre privados
+  real(dp) :: energia
  
-    ! Agrega nuevos vecinos para los atomos agregados y los cercanos
-    box(3)=zmax 
-    call update()
-                     
-  endsubroutine
+  energia= 0._dp
+
+  ! Coords. de partíc.
+  write(11,*) sys%nat ! n
+  write(11,*) "info:",zmax,sys%nat
+  do j =1, sys%nat
+   pa=>sys%a(j)%o
+   write(11,*) pa%sym,pa%pos(:),pa%tipo
+
+   ! Para el otro archivo de salida
+   energia= energia + pa%energy 
+  enddo
+
+  ! t, suma Epot+Ecin 
+  write(12,*) t, energia !sum(sys%a(:)%o%energy)
+
+  call kion(sys,temp) 
+  write(13,*)t,temp
+ 
+  write(14,*)t,rho
+  flush(14)
+  flush(13)
+  flush(12)
+
+end subroutine salida
+
+subroutine calc_rho(rho) !Densidad/concentrac.
+  ! Calculada para un volumen considerado reservorio
+  ! Dos opciones: pistón,
+  ! o con sensor: "debajo" está el sistema, y "encima" está 
+  ! un volumen extra de átomos.
+
+  integer::i,g
+  real(dp)::vol,min_vol
+  real(dp),intent(out)::rho
+
+  g=0
+  min_vol=box(1)*box(2)*2.5_dp
+
+  do i=1, sys%nat ! Para contar las partícs. por encima de z0
+   pa=>sys%a(i)%o
+   ! if (pa%pos(3)>z0.and.pa%pos(3)<z1) then ! sensor+chunk
+   if (pa%pos(3)>z0.and.pa%pos(3)<zmax) then ! piston
+     g=g+1
+   endif
+  enddo
+
+  ! vol=box(1)*box(2)*(z1-z0) ! sensor+chunk
+  vol=box(1)*box(2)*(zmax-z0) ! piston
+  rho= g/vol
+end subroutine calc_rho
+
+subroutine reservas(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
+  class(group)    :: g1, g2
+  type(atom_dclist), pointer :: la
+  type(atom),pointer    :: o1,o2
+  real(dp),intent(in)   ::rho
+  real(dp)              :: drho
+  integer               :: j
+  integer, intent(in)   :: nx
+
+  ! Criterio para actualizar. En base a 4*sigma de desviac. estándar
+  drho= rho - rhomedia
+  if(abs(drho)>(rhomedia*0.186)) return
+
+  z0 = z0 + dist
+  z1 = z1 + dist
+  zmax = zmax + dist
+
+  ! copiamos los atomos que estaban en chunk a sys, con allocate
+  la=>g2%alist ! apunta al chunk
+  do j=1,g2%nat
+     la=>la%next
+     o1=> la%o
+     allocate(o2)
+     call o2%init()
+     call g1%attach(o2) ! Sys
+
+     ! Lista de vecinos
+     call hs%attach(o2)
+     call hs%b%attach(o2)
+     call hs%ref%attach(o2)
+
+     ! TODO: call wwan("Posibilidad de colision",o1%pos(3)<hs%rcut)
+     ! Si vos cambias el rcut, esto te va a hacer acordar de crear un nuevo chunk.
+
+     ! Nuevas partícs. reciben props. de otras ya existentes 
+     call atom_asign(o2, o1)
+     o2%pbc(:) = o1%pbc(:)
+     o2=>null()
+
+     ! y actualiza altura del chunk
+     o1%pos(3)=o1%pos(3)+ dist 
+     o1%pos_old(3)=o1%pos_old(3)+ dist
+  enddo
+
+  n= n + nx 
+
+  ! Agrega nuevos vecinos para los atomos agregados y los cercanos
+  box(3)=zmax 
+  call update()
+                   
+end subroutine reservas
 
 
-  ! Para trabajar con pistón
+! Para trabajar con pistón
 
-  ! Ajusta el "máximo absoluto" en z de la caja de simulación con el mov. de partícs.
-  subroutine maxz(zmax) 
-    real(dp)::lohi !Like a valley/bird in the sky
-    real(dp),intent(inout)::zmax
-    integer::i
+! Ajusta el "máximo absoluto" en z de la caja de simulación con el mov. de partícs.
+! Hoang et al.
+subroutine maxz(zmax) 
+  real(dp)::lohi !Like a valley/bird in the sky
+  real(dp),intent(inout)::zmax
+  integer::i
 
-    !El factor para corregir zmax y las pos(3) de las que estén sobre z0
-    lohi= ((h/tau)*((rho0-rho)/rho)) 
-   
-    do i=1, sys%nat
-     pa=>sys%a(i)%o
-       if (pa%pos(3)>z0) pa%pos(3)=pa%pos(3)-lohi*(pa%pos(3)-z0)
-    enddo
+  !El factor para corregir zmax y las pos(3) de las que estén sobre z0
+  lohi= ((h/tau)*((rho0-rho)/rho)) 
+ 
+  do i=1, sys%nat
+   pa=>sys%a(i)%o
+     if (pa%pos(3)>z0) pa%pos(3)=pa%pos(3)-lohi*(pa%pos(3)-z0)
+  enddo
 
-    zmax=zmax-lohi*(zmax-z0)
+  zmax=zmax-lohi*(zmax-z0)
 
-  endsubroutine
+end subroutine maxz
 
-  subroutine set_sym(a,z) !Asigna tipo a partíc.
-    !integer,intent(in)         :: i
-    character(*),intent(in)     :: z
-    class(atom)                 :: a
+subroutine set_sym(a,z) !Asigna tipo a partíc.
+  character(*),intent(in)     :: z
+  class(atom)                 :: a
 
-    if(i>n) then ! ¿o sys%nat?
-      print *, '¡Error! partíc. no existe'
-      stop
-    endif
+  if(i>n) then ! ¿o sys%nat?
+    print *, '¡Error! partíc. no existe'
+    stop
+  endif
 
-    !pa=>sys%a(i) !Lee el i (intent(in)) y lo asigna luego
-    select case(z) !z=símbolo de átomo
-    case('Li')
-     a%sym='Li' 
-     a%tipo=1
-    case('CG')
-     a%sym='CG'
-     a%tipo=2
-    case('F')
-     a%sym='F'
-     a%tipo=3
-    case default
+  !pa=>sys%a(i) !Lee el i (intent(in)) y lo asigna luego
+  select case(z) !z=símbolo de átomo
+  case('Li')
+   a%sym='Li' 
+   a%tipo=1
+  case('CG')
+   a%sym='CG'
+   a%tipo=2
+  case('F')
+   a%sym='F'
+   a%tipo=3
+  case default
 
-    end select
+  end select
 
 
-  end subroutine
+end subroutine set_sym
 
 
 ! Integrac. browniana
 
-subroutine cbrownian_hs(g,h,prob)
+subroutine cbrownian_hs(g,h)
 class(ngroup)              :: g
-type(atom), pointer        :: o1, o2 
+type(atom), pointer        :: o1 
 type(atom_dclist), pointer :: la 
-real(dp),intent(in)        :: h,prob
-real(dp)                   :: fac1, r1, posold, ne, vd(3), dr
-integer                    :: i,j,ii,jj
+real(dp),intent(in)        :: h
+real(dp)                   :: fac1, r1, posold, vd(3)
+integer                    :: i,j,ii
 logical                    :: depos
 
 la => g%ref%alist
@@ -473,7 +533,7 @@ do ii = 1,g%ref%nat
      dif= dif_sei
   endif
 
-  ! TODO: chequear sea el algoritmo de mayers
+  ! TODO: chequear sea el algoritmo de mayers- ¿si? 24.2.22
   fac1 = sqrt(2._dp*dif*h) 
 
   do j = 1,3
@@ -509,7 +569,7 @@ do i = 1, g%ref%nat
   call g%ref%detach(o1)
 enddo
                
-end subroutine
+end subroutine cbrownian_hs
 
 subroutine atom_hs_choque(o1, g)
 class(atom)     :: o1
@@ -533,7 +593,7 @@ do jj = 1, g%nn(i)  ! sobre los vecinos
   ! Deposicion por contacto con otra particula metalica
   ! 1.19 es el radio de Mayers
   if (o2%tipo==2) then
-    if(dr> 1.4161_dp) cycle
+    ! if(dr> 1.4161_dp) cycle
     
     ne=ran(idum)
     if(ne<prob) then
@@ -558,13 +618,14 @@ do jj = 1, g%nn(i)  ! sobre los vecinos
   o1%pos(:)= o1%old_cg(:) 
   exit
 enddo
-end subroutine
+end subroutine atom_hs_choque
 
+! Para PBC, e intento deposic. sobre electrodo
 subroutine atom_pbc(o1, depos)
 class(atom) :: o1
-integer :: j
-real(dp) :: ne
-logical :: depos
+integer     :: j
+real(dp)    :: ne
+logical     :: depos
 
 depos= .false.
 
@@ -580,92 +641,84 @@ do j=1, 3
        o1%pos_old(j)=o1%pos_old(j)+box(j)
     endif
 
-    ! En una componente (xt - x0)**2 -- mean square displacement
-    msd_u= o1%vel(j) * o1%vel(j) * h * h
-    msd_t= msd_t + msd_u
   else 
     ! Rebote en zmax
     if(o1%pos(j)>zmax) then
-    o1%pos(:)= o1%old_cg(:) 
+    ! Con esferas duras
+      o1%pos(:)= o1%old_cg(:) 
 
-    ! versión vieja-ermak
-    ! o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
-    ! o1%vel(3) = -o1%vel(3)
+    ! Con Ermak
+      ! o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
+      ! o1%vel(3) = -o1%vel(3)
     endif
   endif
 end do
 
-! Versión vieja:
-! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
-! if(o1%pos(3)<=0._dp) then 
-!   ne=ran(idum)
-! 
-!   if(ne<prob) then
-!     call o1%setz('CG') !Le dice que se congele ;)
-!     call g%ref%detach(o1)
-!     o1%pos(3)=0._dp 
-!     cycle !Cicla el do más cercano
-! 
-!   else !Acá rechazo el congelamiento y rebota
-! 
-!     o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
-!     o1%vel(3)=-o1%vel(3)
-! 
-!   endif
-! endif
+! En una componente (xt - x0)**2 -- mean square displacement
+msd_u= o1%vel(1) * o1%vel(1) * h * h
+msd_t= msd_t + msd_u
 
 
-! Para cbrownian+HS
 ! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
 if(o1%pos(3)<=0._dp) then 
   ne=ran(idum)
 
   if(ne<prob) then
     call o1%setz('F')   ! Es inerte en este paso de tiempo
-    ! o1%pos(:)=[0.,0.,-1.e3] ! Chequeo Cottrell
+    depos= .true.
+
+    ! Para chequeo Cottrell
+    ! o1%pos(:)=[0.,0.,-1.e3] 
+
+    !!!!!
+    ! Vers. vieja (Langevin 2019)
+    !
+    ! call o1%setz('CG') !Le dice que se congele ;)
+    ! call g%ref%detach(o1)
+    ! o1%pos(3)=0._dp 
+    ! cycle !Cicla el do más cercano
+    !
+    ! Vers. vieja (Langevin 2019)
+    !!!!!
+
+
+! else !Acá rechazo el congelamiento y rebota
+! 
+!   o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
+!   o1%vel(3)=-o1%vel(3)
   endif
 
   o1%pos(:) = o1%old_cg(:)
-  depos= .true.
+  ! depos= .true. ! ¿No va dentro del anterior if?
 endif
-end subroutine
+end subroutine atom_pbc
 
 ! Integrac. Langevin
 ! Constantes p/ Ermak
-subroutine set_ermak(h,gama,Tsist) 
-real(dp),intent(in)  ::h,gama,Tsist
-!real(dp),intent(out) ::gama ! ¿?
+subroutine set_ermak(h,gama,Tsist,cc0, cc1, cc2, sdr, sdv, crv1, crv2) 
+real(dp),intent(in)  :: h,gama,Tsist
+real(dp),intent(out) :: cc0, cc1, cc2, sdr, sdv, crv1, crv2
 
 !En libro: xi=kB*T/m*D=gama
 ! Para cambio en coef. difusión SC-SEI
-! gama_sc
-! gama_sei
-! arreglar para hacer el llamado dos veces, con dist. parámetros de entrada (gama_ sc y gama_sei) y salida etc
 
 !Calcula las ctes.
-cc0_sc= exp(-h*gama)
-cc1_sc= (1._dp-cc0)/gama
-cc2_sc= (1._dp-cc1/h)/gama
-cc0_sei= exp(-h*gama)
-cc1_sei= (1._dp-cc0)/gama
-cc2_sei= (1._dp-cc1/h)/gama
+cc0= exp(-h*gama)
+cc1= (1._dp-cc0)/gama
+cc2= (1._dp-cc1/h)/gama
 
 !Desv. estándar
-sdr_sc= sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0_sc+cc0_sc*cc0_sc)/(h*gama)))
-sdv_sc= sqrt(1._dp-cc0_sc*cc0_sc)
-sdr_sei= sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0_sei+cc0_sei*cc0_sei)/(h*gama)))
-sdv_sei= sqrt(1._dp-cc0_sei*cc0_sei)
+sdr= sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0+cc0*cc0)/(h*gama)))
+sdv= sqrt(1._dp-cc0*cc0)
 
 !Acá calcula el coef. de correlac. posic.-vel.
-crv1_sc= (1._dp-cc0_sc)*(1._dp-cc0_sc)/(gama*sdr_sc*sdv_sc)
-crv2_sc= sqrt(1._dp-(crv1_sc*crv1_sc))
-crv1_sei= (1._dp-cc0_sei)*(1._dp-cc0_sei)/(gama*sdr_sei*sdv_sei)
-crv2_sei= sqrt(1._dp-(crv1_sei*crv1_sei))
+crv1= (1._dp-cc0)*(1._dp-cc0)/(gama*sdr*sdv)
+crv2= sqrt(1._dp-(crv1*crv1))
 
 !Un factor útil :P/para la rutina que sigue
 skt=sqrt(kB_ui*Tsist)
 
-endsubroutine
+end subroutine set_ermak
 
 !Actualiza posic., din. Langevin
 
@@ -676,7 +729,7 @@ class(ngroup)    :: g
 type(atom), pointer        :: o1 
 type(atom_dclist), pointer :: la 
 real(dp),intent(out)       :: ranv(:,:)
-real(dp)                   :: r1 ,r2, ranr, ne
+real(dp)                   :: r1 ,r2, ranr
 integer                    :: i,j
 logical                    :: depos
 
@@ -689,17 +742,17 @@ do i = 1,g%ref%nat
   o1%old_cg(:)=o1%pos(:)
  
   ! Para cambio SC-SEI
-  if (o1%pos(3)>80._dp) then
-     cc1= cc1_sc
-     cc2= cc2_sc
-     crv1= crv1_sc
-     crv2= crv2_sc
-  else
-     cc1= cc1_sei
-     cc2= cc2_sei
-     crv1= crv1_sei
-     crv2= crv2_sei
-  endif
+  ! if (o1%pos(3)>80._dp) then
+  !    cc1= cc1_sc
+  !    cc2= cc2_sc
+  !    crv1= crv1_sc
+  !    crv2= crv2_sc
+  ! else
+  !    cc1= cc1_sei
+  !    cc2= cc2_sei
+  !    crv1= crv1_sei
+  !    crv2= crv2_sei
+  ! endif
 
   do j = 1, 3
     r1=gasdev()
@@ -713,7 +766,9 @@ do i = 1,g%ref%nat
   end do
 
   call atom_pbc(o1, depos) ! ver de seleccionar forma de CG sobre electrodo
-  ! Para no calcular choques si depositó
+
+  ! Para no calcular choques o deposic. sobre Li
+  ! si depositó sobre electrodo
   if (depos) cycle
   call atom_hs_choque(o1, g)
   ! probar, luego ver sino si usar knock
@@ -729,20 +784,20 @@ do i = 1, g%ref%nat
   call g%ref%detach(o1)
 enddo
 
-end subroutine   
+end subroutine ermak_a
 
 
 ! calcula veloc 
 subroutine ermak_b(g,ranv)
-class(group)               :: g
+class(ngroup)              :: g
 type(atom), pointer        :: o1 
 type(atom_dclist), pointer :: la 
 real(dp),intent(in)        :: ranv(:,:)
 integer                    :: i
 
-la => g%alist
+la => g%ref%alist
 
-do i = 1,g%nat
+do i = 1,g%ref%nat
   la => la%next
   o1 => la%o 
  
@@ -753,7 +808,7 @@ do i = 1,g%nat
 
 enddo
 
-end subroutine
+end subroutine ermak_b
 
 
 subroutine kion(g,temp)
@@ -789,43 +844,48 @@ subroutine kion(g,temp)
  
   temp=vdac/(j*3._dp*kB_ui)
 
-endsubroutine
+end subroutine kion
 
 ! Fuerzas - potencial LJ
 subroutine fuerza(g,eps,r0) 
-class(group)    :: g
+class(ngroup)    :: g
 type(atom), pointer        :: o1, o2 
-type(atom_dclist), pointer :: la 
+type(atom_dclist), pointer :: la!, lb 
 real(dp)            :: vd(3),dr,aux,b,c
 real(dp),intent(in) :: eps(3,3),r0(3,3)
-integer         :: i,j,l,k,m
+integer         :: i,j,ii,jj,l,k,m
 
-la => g%alist
+la => g%ref%alist
 
-do i=1, g%nat !n
+do i=1, g%ref%nat !n
   la => la%next
   o1 => la%o
   o1%force(:) = 0._dp
   o1%energy = 0._dp  
 
 enddo
-
-
-do i = 1, g%nat-1 
+! Calcula fuerzas con las partícs. vecinas
+la => g%ref%alist
+do ii = 1, g%ref%nat ! saqué (nat-1)
   la => la%next 
   o1 => la%o
+  i = o1%gid(g)
 
   k=o1%tipo
 
-  do j = i+1, g%nat
-    la => la%next
-    o2 => la%o
+  ! lb => la 
+  ! do j = i+1, g%ref%nat
+  !   lb => lb%next
+  !   o2 => lb%o
+  do jj = 1, g%nn(i) !sobre lo vecinos
 
-    m=o2%tipo   !Determina esto para luego poder elegir los valores de eps y r0
+    j = g%list(i,jj)
+    o2 => g%a(j)%o
+    m=o2%tipo   ! para luego poder elegir los valores de eps y r0
    
     vd(:) = o1%pos(:)-o2%pos(:)
    
-    !Armar la caja
+    ! PBC en x e y
     do l=1,2       !Sin contar en z ;)
       if (vd(l)>box(l)*.5_dp) then
         vd(l)=vd(l)-box(l)
@@ -953,7 +1013,7 @@ enddo
 ! endif
 
 ! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
-endsubroutine
+end subroutine knock
 
 ! subroutine hspheres(list) ! Rebote brusco en solucion
 ! type(ngroup)              :: list
@@ -1003,7 +1063,7 @@ endsubroutine
 ! 
 ! enddo
 ! 
-! endsubroutine
+! end subroutine hspheres
 
 function gasdev() !Nro aleat.
   real(dp)                  :: rsq,v1,v2
