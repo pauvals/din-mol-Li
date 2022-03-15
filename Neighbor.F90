@@ -349,7 +349,7 @@ if(g%cells) then
        
     ! Check if the cell size do not drop below cut radious
     if(all(box(:)/g%ncells(:)>rcut)) then
-      
+                
       ! Update cell size (needed for NPT)
       g%cell(:)=box(:)/g%ncells(:)
       return
@@ -415,8 +415,9 @@ g%head(:,:,:) = 0
 ! !$OMP  PARALLEL DO DEFAULT(NONE) &
 ! !$OMP& PRIVATE(i,a,aux1) &
 ! !$OMP& SHARED(g)
-do i = 1,g%nat
+do i = 1,g%amax
   a => g%a(i)%o
+  if(.not.associated(a)) cycle
 
   ! FIXME
   ! ! Si no hago pbc podria salirse alguna fuera y dar un segfull
@@ -612,8 +613,9 @@ do ii = 1,g%ref%nat
   ! Reset number of neighbors
   m=0
 
-  do j = 1, g%b%nat
+  do j = 1, g%b%amax
     aj => g%b%a(j)%o
+    if(.not.associated(aj)) cycle
 
     ! Skip autointeraction
     if(associated(aj,target=ai)) cycle
@@ -658,8 +660,9 @@ rcut=rcut*rcut
 ! Reset number of neighbors
 m=0
 
-do j = 1, g%b%nat
+do j = 1, g%b%amax
   aj=>g%b%a(j)%o
+  if(.not.associated(aj)) cycle
 
   ! Skip autointeraction
   if(associated(aj,target=ai)) cycle
@@ -822,14 +825,17 @@ end subroutine ngroup_cells_atom
 
 subroutine update()
 ! Update all neighbor lists
-class(ngroup), pointer     :: g
-integer                    :: i
+class(ngroup), pointer       :: g
+integer                      :: i
+type(atom_dclist),pointer    :: la
 
 ! call system_clock(t1)
 nupd_vlist = nupd_vlist +1
 
-do i = 1, sys%nat
-  sys%a(i)%o%pos_old = sys%a(i)%o%pos
+la => sys%alist
+do i = 1,sys%nat
+  la => la%next 
+  la%o%pos_old = la%o%pos
 enddo
 
 ! Needed for NPT... naaa
@@ -851,8 +857,9 @@ end subroutine update
 
 subroutine test_update()
 ! Check if neighbor update is needed
-real(dp)            :: rd,dispmax1,dispmax2,vd(dm)
-integer             :: i
+real(dp)                   :: rd,dispmax1,dispmax2,vd(dm)
+integer                    :: i
+type(atom_dclist),pointer  :: la
 
 ! Update the ghost positions
 if(useghost) call pbcghost_move
@@ -861,9 +868,11 @@ if(useghost) call pbcghost_move
 dispmax1 = 1.e-16_dp
 dispmax2 = 1.e-16_dp
 
-do i = 1, sys%nat
+la => sys%alist
+do i = 1,sys%nat
+  la => la%next 
 
-  vd = sys%a(i)%o%pos - sys%a(i)%o%pos_old
+  vd = la%o%pos - la%o%pos_old
 
   rd = dot_product(vd,vd)
 
@@ -1206,13 +1215,16 @@ do i = 1,ghost%nat
   endif
 
 enddo
- 
+
+! FIXME: No hace falta recorrer 26 veces el sistema!!
 ! Find new ghosts
 ! !$OMP PARALLEL DO PRIVATE(m,i,j,la,o,k,o,g,r,rold)
 do m =1,26
 
+  la => sys%alist
   do i = 1,sys%nat
-    o => sys%a(i)%o
+    la => la%next 
+    o => la%o
 
     ! Image position..
     ! TODO: it would be easy to check proximity to the border?
@@ -1315,9 +1327,10 @@ subroutine pbcfullghost()
 ! chance that local configurations used in two consecutive calls to pbcghost are
 ! uncorrelated, it is safer to use pbcfullghost.
 use gems_groups, only: atom_dclist
-real(dp)            :: rcut,r(dm)
-type(atom),pointer  :: o
-integer             :: i,m
+real(dp)                     :: rcut,r(dm)
+type(atom),pointer           :: o
+integer                      :: i,m
+type(atom_dclist),pointer    :: la
 
 rcut=maxrcut+nb_dcut
 
@@ -1332,9 +1345,10 @@ call do_pbc(sys)
 ! !$OMP PARALLEL DO PRIVATE(m,i,j,la,o,k,o,g,r,rold)
 do m =1,26
 
+  la => sys%alist
   do i = 1,sys%nat
-    o => sys%a(i)%o
-
+    la => la%next 
+    o => la%o 
     ! if (.not.all(la%o%pbc(:)*n1cells(m,:))) cycle
 
     r(:)=o%pos(:)+n1cells(m,:)*box(:)
@@ -1352,32 +1366,5 @@ enddo
 
 end subroutine
 
-function idoit(i,j,itag,jtag,vd)
-! Use precomputed midpoint criterion to decide if interaction is owned.
-logical                :: idoit
-integer,intent(in)     :: i, j, itag, jtag
-real(dp),intent(in)    :: vd(3)
-
-idoit = .false.
-
-if (i>sys%nat) return
-
-if (j<sys%nat) then
-  idoit = .true.
-else if (itag < jtag) then
-  idoit = .true.
-else if (itag == jtag) then
-  if (vd(3) > SMALL) then
-    idoit = .true.
-  else if (abs(vd(3)) < SMALL) then
-    if (vd(2) > SMALL) then
-      idoit = .true.
-    else if (abs(vd(2)) < SMALL .and. vd(1) > SMALL) then
-      idoit = .true.
-    endif
-  endif
-endif
-
-end function idoit
 
 end module
