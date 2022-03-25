@@ -35,6 +35,9 @@ program din_mol_Li
   integer             :: nwr        ! paso de escritura
   real(dp)            :: t=0.0_dp   ! tiempo en ps
 
+  ! Modelo (?) 
+  logical             :: integrador, reserva    ! nro de pasos
+
   !Observables
   real(dp)            :: temp,rho,rho0
 
@@ -87,11 +90,13 @@ program din_mol_Li
   ! Init lista para choques de esferas duras
   call hs%init()
   call hs%setrc(3.2_dp) ! Maximo radio de corte
-  nb_dcut=10._dp         ! The shell length for verlet update criteria
+  nb_dcut=10._dp        ! The shell length for verlet update criteria
  
+  call config()
+
   ! Grupo chunk
-  ! call chunk%init()
- 
+  if (reserva.eqv..false.) call chunk%init()
+
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
   close(25)
@@ -107,7 +112,7 @@ program din_mol_Li
   !Search neighbors
   call update()
 
-  call fuerza(hs,eps,r0)
+  if (integrador.eqv..true.) call fuerza(hs,eps,r0)
 
   ! Calcula rho-densidad reservorio inicial
   call calc_rho(rho)
@@ -132,15 +137,19 @@ program din_mol_Li
 
     ! Da un paso #wii
 
-    ! Para trabajar con din. Langevin
-    call ermak_a(hs,ranv)
-    ! Ve si congela o rebota
-    ! call knock(hs)
-    call fuerza(hs,eps,r0)
-    call ermak_b(hs,ranv)
+    if (integrador.eqv..true.) then
+      ! Para trabajar con din. Langevin
+      call ermak_a(hs,ranv)
+      ! TODO: ver de sacar ya knock
+      ! Ve si congela o rebota
+      ! call knock(hs)
+      call fuerza(hs,eps,r0)
+      call ermak_b(hs,ranv)
 
-    ! Para usar din. Browniana, y "esferas duras"
-    ! call cbrownian_hs(hs,h)
+    else
+      ! Para usar din. Browniana, y "esferas duras"
+      call cbrownian_hs(hs,h)
+    endif
  
     call test_update()
     ! call update()
@@ -149,7 +158,7 @@ program din_mol_Li
     call calc_rho(rho)
 
     ! Agrega bloques de partículas
-    ! call reservas(sys, chunk, nx, rho)
+    if (reserva.eqv..false.)  call reservas(sys, chunk, nx, rho)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -163,7 +172,7 @@ program din_mol_Li
     call timer_dump(i,nup=nupd_vlist)
   
     ! Para usar reservorio-pistón:
-    call maxz(zmax)
+    if (reserva.eqv..true.) call maxz(zmax)
 
     t=t+h
    
@@ -198,10 +207,17 @@ program din_mol_Li
 !  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
-  call wstd(); write(logunit,'("maximo desplzamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
+  call wstd(); write(logunit,'("maximo desplazamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
   call wstd(); write(logunit,'("MSD maximo en x-y: ",e10.3)') msd_max
  
 contains
+
+subroutine config()
+  open(15,File='movedor.ini') ! by Nohe :)
+  read(15,*) integrador 
+  read(15,*) reserva
+  close(15)
+end subroutine config 
 
 subroutine entrada()
   open(15,File='entrada.ini')
@@ -223,13 +239,16 @@ integer :: i
 type(atom_dclist), pointer :: la
 
 ! Tamaños iniciales de "reservorio"
-! Al usar chunk con sensor
-! dist= dist + hs%rcut
-! z1 = z0 + dist
-! zmax = z1 + dist 
+if (reserva.eqv..true.) then
+  ! Al usar pistón
+  zmax= 200._dp
 
-! Al usar pistón
-zmax= 200._dp
+else
+  ! Al usar chunk con sensor
+  dist= dist + hs%rcut
+  z1 = z0 + dist
+  zmax = z1 + dist 
+endif
 
 ! Para luego actualizar reservorio
 rhomedia= 5.775329e-4_dp
@@ -298,18 +317,13 @@ box(3)=zmax
 ! pa%vel(:)=(pa%pos(:)-pa%pos_old(:))/h
 
 ! Para trabajar con din. Langevin
+if (integrador.eqv..true.) then
+  ! Valores inic. de las ctes. de Ermak
+  ! call set_ermak(h,gama_sc,Tsist,cc0_sc, cc1_sc, cc2_sc, sdr_sc, sdv_sc, crv1_sc, crv2_sc)
+  ! call set_ermak(h,gama,Tsist,cc0_sei, cc1_sei, cc2_sei, sdr_sei, sdv_sei, crv1_sei, crv2_sei)
+  call set_ermak(h,gama,Tsist,cc0, cc1, cc2, sdr, sdv, crv1, crv2)
 
-! Valores inic. de las ctes. de Ermak
-! call set_ermak(h,gama_sc,Tsist,cc0_sc, cc1_sc, cc2_sc, sdr_sc, sdv_sc, crv1_sc, crv2_sc)
-! call set_ermak(h,gama,Tsist,cc0_sei, cc1_sei, cc2_sei, sdr_sei, sdv_sei, crv1_sei, crv2_sei)
-call set_ermak(h,gama,Tsist,cc0, cc1, cc2, sdr, sdv, crv1, crv2)
-
-! la => hs%alist
-! do i=1, hs%nat !n
-!   la => la%next
-!   pa => la%o
-!   pa%acel(:)=pa%force(:)/pa%m
-! enddo
+endif
 
 end subroutine config_inic
 
@@ -866,17 +880,13 @@ do i=1, g%ref%nat !n
 enddo
 ! Calcula fuerzas con las partícs. vecinas
 la => g%ref%alist
-do ii = 1, g%ref%nat ! saqué (nat-1)
+do ii = 1, g%ref%nat
   la => la%next 
   o1 => la%o
   i = o1%gid(g)
 
   k=o1%tipo
 
-  ! lb => la 
-  ! do j = i+1, g%ref%nat
-  !   lb => lb%next
-  !   o2 => lb%o
   do jj = 1, g%nn(i) !sobre lo vecinos
 
     j = g%list(i,jj)
