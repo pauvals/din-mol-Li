@@ -36,7 +36,7 @@ program din_mol_Li
   real(dp)            :: t=0.0_dp   ! tiempo en ps
 
   ! Modelo (?) 
-  logical             :: integrador, reserva    ! nro de pasos
+  logical             :: integrador, reserva    ! algoritmo y estilo de reservorio usados 
 
   !Observables
   real(dp)            :: temp,rho,rho0
@@ -120,7 +120,7 @@ program din_mol_Li
   
 
   ! Leer chunk de atoms:
-  ! call config_chunk()
+  if (reserva.eqv..false.) call config_chunk()
 
 
   ! Abro archivos de salida
@@ -158,7 +158,7 @@ program din_mol_Li
     call calc_rho(rho)
 
     ! Agrega bloques de partículas
-    if (reserva.eqv..false.)  call reservas(sys, chunk, nx, rho)
+    if (reserva.eqv..false.) call bloques(sys, chunk, nx, rho)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -408,18 +408,22 @@ subroutine calc_rho(rho) !Densidad/concentrac.
 
   do i=1, sys%nat ! Para contar las partícs. por encima de z0
    pa=>sys%a(i)%o
-   ! if (pa%pos(3)>z0.and.pa%pos(3)<z1) then ! sensor+chunk
-   if (pa%pos(3)>z0.and.pa%pos(3)<zmax) then ! piston
-     g=g+1
+   if (reserva.eqv..true.) then 
+     if (pa%pos(3)>z0 .and. pa%pos(3)<zmax) g= g+1 ! piston
+   else
+     if (pa%pos(3)>z0 .and. pa%pos(3)<z1) g= g+1   ! sensor+chunk
    endif
   enddo
 
-  ! vol=box(1)*box(2)*(z1-z0) ! sensor+chunk
-  vol=box(1)*box(2)*(zmax-z0) ! piston
+  if (reserva.eqv..true.) then
+    vol=box(1)*box(2)*(zmax-z0) ! piston
+  else
+    vol=box(1)*box(2)*(z1-z0)   ! sensor+chunk
+  end if
   rho= g/vol
 end subroutine calc_rho
 
-subroutine reservas(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
+subroutine bloques(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
   class(group)    :: g1, g2
   type(atom_dclist), pointer :: la
   type(atom),pointer    :: o1,o2
@@ -430,7 +434,7 @@ subroutine reservas(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
 
   ! Criterio para actualizar. En base a 4*sigma de desviac. estándar
   drho= rho - rhomedia
-  if(abs(drho)>(rhomedia*0.186)) return
+  if(abs(drho)>(rhomedia*0.186)) return ! volver a 0.25 ¿?
 
   z0 = z0 + dist
   z1 = z1 + dist
@@ -469,7 +473,7 @@ subroutine reservas(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
   box(3)=zmax 
   call update()
                    
-end subroutine reservas
+end subroutine bloques
 
 
 ! Para trabajar con pistón
@@ -516,7 +520,6 @@ subroutine set_sym(a,z) !Asigna tipo a partíc.
   case default
 
   end select
-
 
 end subroutine set_sym
 
@@ -658,13 +661,18 @@ do j=1, 3
   else 
     ! Rebote en zmax
     if(o1%pos(j)>zmax) then
-    ! Con esferas duras
-      o1%pos(:)= o1%old_cg(:) 
+      if (integrador.eqv..true.) then
+        ! Con Ermak
+        o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
+        o1%vel(3) = -o1%vel(3)
 
-    ! Con Ermak
-      ! o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
-      ! o1%vel(3) = -o1%vel(3)
+      else
+        ! Con esferas duras
+        o1%pos(:)= o1%old_cg(:)
+      endif
+
     endif
+
   endif
 end do
 
