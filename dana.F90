@@ -434,7 +434,7 @@ subroutine bloques(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
 
   ! Criterio para actualizar. En base a 4*sigma de desviac. estándar
   drho= rho - rhomedia
-  if(abs(drho)>(rhomedia*0.186)) return ! volver a 0.25 ¿?
+  if(abs(drho)<(rhomedia*0.186)) return ! volver a 0.25 ¿?
 
   z0 = z0 + dist
   z1 = z1 + dist
