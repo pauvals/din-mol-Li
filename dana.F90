@@ -6,7 +6,8 @@ program din_mol_Li
 
   implicit none
  
-  integer,parameter     :: dp=8
+  integer, parameter    :: sp   = kind(1.0)
+  integer, parameter    :: dp   = kind(1.0d0)
  
   !Cosas del sistema  #what a quilombo
   integer               :: n, nx, nchunk        ! Nros de particulas
@@ -95,7 +96,7 @@ program din_mol_Li
   call config()
 
   ! Grupo chunk
-  if (reserva.eqv..false.) call chunk%init()
+  if (.not.reserva) call chunk%init()
 
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
@@ -112,7 +113,7 @@ program din_mol_Li
   !Search neighbors
   call update()
 
-  if (integrador.eqv..true.) call fuerza(hs,eps,r0)
+  if (integrador) call fuerza(hs,eps,r0)
 
   ! Calcula rho-densidad reservorio inicial
   call calc_rho(rho)
@@ -120,7 +121,7 @@ program din_mol_Li
   
 
   ! Leer chunk de atoms:
-  if (reserva.eqv..false.) call config_chunk()
+  if (.not.reserva) call config_chunk()
 
 
   ! Abro archivos de salida
@@ -137,7 +138,7 @@ program din_mol_Li
 
     ! Da un paso #wii
 
-    if (integrador.eqv..true.) then
+    if (integrador) then
       ! Para trabajar con din. Langevin
       call ermak_a(hs,ranv)
       ! TODO: ver de sacar ya knock
@@ -158,7 +159,7 @@ program din_mol_Li
     call calc_rho(rho)
 
     ! Agrega bloques de partículas
-    if (reserva.eqv..false.) call bloques(sys, chunk, nx, rho)
+    if (.not.reserva) call bloques(sys, chunk, nx, rho)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -172,7 +173,7 @@ program din_mol_Li
     call timer_dump(i,nup=nupd_vlist)
   
     ! Para usar reservorio-pistón:
-    if (reserva.eqv..true.) call maxz(zmax)
+    if (reserva) call maxz(zmax)
 
     t=t+h
    
@@ -239,7 +240,7 @@ integer :: i
 type(atom_dclist), pointer :: la
 
 ! Tamaños iniciales de "reservorio"
-if (reserva.eqv..true.) then
+if (reserva) then
   ! Al usar pistón
   zmax= 200._dp
 
@@ -317,7 +318,7 @@ box(3)=zmax
 ! pa%vel(:)=(pa%pos(:)-pa%pos_old(:))/h
 
 ! Para trabajar con din. Langevin
-if (integrador.eqv..true.) then
+if (integrador) then
   ! Valores inic. de las ctes. de Ermak
   ! call set_ermak(h,gama_sc,Tsist,cc0_sc, cc1_sc, cc2_sc, sdr_sc, sdv_sc, crv1_sc, crv2_sc)
   ! call set_ermak(h,gama,Tsist,cc0_sei, cc1_sei, cc2_sei, sdr_sei, sdv_sei, crv1_sei, crv2_sei)
@@ -408,14 +409,14 @@ subroutine calc_rho(rho) !Densidad/concentrac.
 
   do i=1, sys%nat ! Para contar las partícs. por encima de z0
    pa=>sys%a(i)%o
-   if (reserva.eqv..true.) then 
+   if (reserva) then 
      if (pa%pos(3)>z0 .and. pa%pos(3)<zmax) g= g+1 ! piston
    else
      if (pa%pos(3)>z0 .and. pa%pos(3)<z1) g= g+1   ! sensor+chunk
    endif
   enddo
 
-  if (reserva.eqv..true.) then
+  if (reserva) then
     vol=box(1)*box(2)*(zmax-z0) ! piston
   else
     vol=box(1)*box(2)*(z1-z0)   ! sensor+chunk
@@ -661,7 +662,7 @@ do j=1, 3
   else 
     ! Rebote en zmax
     if(o1%pos(j)>zmax) then
-      if (integrador.eqv..true.) then
+      if (integrador) then
         ! Con Ermak
         o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
         o1%vel(3) = -o1%vel(3)
@@ -1084,7 +1085,9 @@ end subroutine knock
 ! end subroutine hspheres
 
 function gasdev() !Nro aleat.
-  real(dp)                  :: rsq,v1,v2
+  ! XXX: We use sp in rsq because log(rsq) gives different results in different machines when rsq is dp.
+  real(sp)                  :: rsq 
+  real(dp)                  :: v1,v2
   real(dp), save            :: g
   real(dp)                  :: gasdev
   logical, save             :: gaus_stored=.false.
@@ -1101,7 +1104,7 @@ function gasdev() !Nro aleat.
       end if
     end do
     rsq=sqrt(-2.0_dp*log(rsq)/rsq)
-    gasdev=v1*rsq
+    gasdev=v1*real(rsq,kind=dp)
     g=v2*rsq
     gaus_stored=.true.
   end if
