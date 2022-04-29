@@ -1,12 +1,17 @@
 # We are not following the standard layout of a GNU proyect
 AUTOMAKE_OPTIONS = foreign
 
+
 bin_PROGRAMS = dana
 
 dana_SOURCES = dana.F90 \
                Constants.F90 \
+               Cells.F90  \
                Neighbor.F90  \
+               Elements.F90  \
+               Program_Types.F90  \
                Errors.f90  \
+               Strings.f90  \
                Groups.F90 
 
 # Fortran Preprocesor Templates	       
@@ -27,6 +32,7 @@ DEBUG_FLAGS = -g -O0 -p
 PROF_FLAGS = -p 
  
 AM_FCFLAGS += $(OPENMP_CFLAGS) 
+AM_FCFLAGS += -DDIM3
 
 if COMPILER_IS_GFORTRAN
 DEBUG_FLAGS += -fbacktrace
@@ -69,7 +75,12 @@ debug:
 all: dana
 
 Constants.o:     
+Strings.o:  Constants.o
+Errors.o:   Constants.o Strings.o
+Elements.o: Constants.o Strings.o Errors.o
+ 
+Program_Types.o: Constants.o Errors.o Elements.o
 dana.o: Groups.o Neighbor.o Errors.o
-Errors.o: Constants.o
-Groups.o: Constants.o 
-Neighbor.o:  Constants.o Groups.o Errors.o
+Program_Types.o: Constants.o Errors.o Elements.o
+Groups.o:        Constants.o Elements.o Errors.o Program_Types.o
+Neighbor.o:  Constants.o Groups.o Errors.o Cells.o

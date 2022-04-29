@@ -18,7 +18,8 @@
 
 module gems_groups
 use gems_errors, only:werr
-use gems_constants,only:sp,dp,dm
+use gems_constants,only:sp,dp,dm,find_io
+use gems_elements,only:elements,element,inq_z
 
 implicit none
 private
@@ -171,10 +172,24 @@ type, public :: group
   procedure :: detach_all => group_detach_all
   generic   :: detach => detach_all, detach_atom
 
+  procedure :: epot_changed
+  procedure :: pos_changed
+  procedure :: vel_changed
+  procedure :: all_changed
+
   ! devuelve un puntero correspondiendo a un indice desde el head
   ! XXX: Note that igroup might be a better resource
   procedure :: atom => group_atombyindex 
 
+  ! Basic inquires
+  ! --------------
+  procedure :: inq_insphere
+           
+
+  procedure :: write => group_write
+  generic :: write(formatted) => write
+  ! procedure :: write => group_write
+ 
 end type group
  
 ! An indexed group with atom pointers sorted in an array. A second index
@@ -185,10 +200,20 @@ type, extends(group), public :: igroup
   type(atom_ap),allocatable :: a(:)
 
   ! Efective dimension of `a` (nat<amax<size(a)).
-  integer                 :: amax=0 
+  integer             :: amax=0 
+    
+  ! A dummy atom used as a flag to skip detached atoms. 
+  type(atom),pointer  :: limbo
+  logical             :: b_limbo=.false.
+  integer             :: nlimbo=0
 
-  ! Control index update
-  real(dp)                :: aupd=0.1
+  ! Update index if 10% of the index is null. 
+  ! Set to 0 to avoid updates.
+  real(dp)                :: aupd=0.5
+
+  ! Signal out to rebuild internal arrays in extended types.
+  ! It becomes `.true.` if there is an index update.
+  logical                 :: update=.false. 
     
   ! The growth speed for reallocation
   integer                 :: pad=100
@@ -199,14 +224,16 @@ type, extends(group), public :: igroup
   ! (see group type construct).
   procedure :: igroup_construct   
   procedure :: igroup_attach_atom 
+  procedure :: igroup_detach_atom 
            
   procedure :: init => igroup_construct
   procedure :: dest => igroup_destroy
+  procedure :: clean => igroup_clean
 
   procedure :: attach_atom  => igroup_attach_atom
   procedure :: detach_atom  => igroup_detach_atom
   procedure :: update_index => igroup_update_index
-                                 
+                              
 end type igroup
 
 ! Array of Pointers to groups
@@ -225,7 +252,17 @@ public :: group_ap
 
 ! Index of groups (see `id` in group type)
 type(group_vop),target,public   :: gindex
+public :: gindex_epot_changed, &
+          gindex_all_changed, &
+          gindex_vel_changed, &
+          gindex_pos_changed 
+
+! TODO
+public :: group_switch_vectorial
+public :: group_switch_objeto
  
+type(igroup),target,public  :: sys
+                                 
 ! Atom type
 ! =========
 
@@ -243,41 +280,81 @@ type, public :: atom
   ! The atom id for each igroup (regular groups has a 0)
   integer,allocatable    :: id(:)
 
-  ! If the aotm is a ghost, point to the real image
-  class(atom),pointer    :: ghost=>null()
+  ! If the atom is a ghost, prime point to the real image
+  type(atom),pointer     :: prime=>null()
+
+  ! If the atom is real, ghost(i) point to its ith ghost (if active).
+  type(atom_ap),allocatable :: ghost(:) ! Use allocatable since declaration comes later (F2008)
                          
   ! Element properties
   ! ------------------
 
   ! Propiedades que defino afuera de e para que se mas rapidamente accedida
   ! (en general la 1/masa esta en los cuellos de botella de los algoritmos)
-  integer           :: tipo=0
-  real(dp)          :: m=1.0_dp
-  character(2)      :: sym
+  integer           :: z=119 ! The generic element
+  real(dp)          :: mass=1.0_dp,one_mass=1.0_dp,one_sqrt_mass=1.0_dp
+  real(dp)          :: q=0.0_dp  ! Carga
+  real(dp)          :: s=1.0_dp  ! sigma
+  real(dp)          :: e=0.0_dp  ! epsilon
+  character(:),allocatable :: sym
+  integer           :: sp=0      ! Hybridization
+
+  ! Constrain. Si bconst=true el atomo tiene un constrain. Se colapsa la
+  ! fuerza en direccion al vector vconst si lconst=T o se borra la componente
+  ! de la fueza en direccion al vector si lconst=F. Idem con la velocidad. Asi
+  ! la particula queda fija en un plano o en un eje. Tambien la puedo forzar
+  ! directamente haciendolo con la posicion
+  real(dp)              :: vconst(dm)=0.0_dp
+  real(dp),allocatable  :: pconst(:) ! posicion incial del constrain
+  logical               :: bconst=.false.,lconst=.false.
+
+  !  Enlaces y moleculas.... TOFIX
+  integer      :: abondid(20)=0  ! el indicie dentro de la molecula de los asociados
+  integer      :: abonds=0  ! el numero de asociados
+  integer      :: molid=0   ! el indice de la molecula
+  integer      :: amolid=0  ! el indice dentro de la molecula
 
   ! ----- Propiedades mecanicas
-  real(dp) :: pos(3),   &!propieties of atom. [a][..][m/s][..]
-              force(3), &
-              acel(3),  & !aceleracion
-              vel(3)
+  real(dp),pointer       :: pos(:)=>null(),   &!propieties of atom. [a][..][m/s][..]
+                            force(:)=>null(), &
+                            acel(:)=>null(),  & !aceleracion
+                            vel(:)=>null()
 
   !In a local atom it has the info to unwrap coordinates. In the ghost atom,
   !it has the info of the subdomain/processor it belongs.
   integer                :: boxcr(dm)=0
   logical                :: pbc(dm)=.false. !PBC para ese atomo
 
+  real(dp),dimension(dm) :: acel2  =0._dp,& !derivada primera de la aceleración
+                            acel3  =0._dp,& !derivada segunda de la aceleración
+                            acel4  =0._dp,& !derivada tercera de la aceleración
+                            pos_eq =0._dp,& !para ver el desplazamiento y decidir entrar al hyperespacio
+                            pos_v  =0._dp,& !posicion relativa al punto v
+                            vel_v  =0._dp,& !velocidad relativa al punto v
+                            vel_rot=0._dp,& !velocidad de rotacion
+                            vel_vib=0._dp,& !velocidad de vibracion
+                            pos_cm =0._dp,& !posicion relativa al cm del grupo
+                            vel_cm =0._dp   !velocidad relativa al cm del grupo
+
   !para ver el desplazamiento en la lista de vecinos. Esto lo establezco bien
   !grande para forzar la primera actualizacion del verlet
-  real(dp),dimension(dm) :: pos_old =1.e8_dp, old_cg = 1.e8_dp
+  real(dp),dimension(dm) :: pos_old =1.e8_dp, old_cg=1.e8_dp
 
-  real(dp)               :: energy=0.d0
-         
+  real(dp)               :: epot=0.d0,                & !energia potencial total[ev]
+                            erot=0.d0,erot_ss=0.d0,   & !energia rotacional relative to system and ss [ev]
+                            evib=0.d0,evib_ss=0.d0,   & !energia vibracional relative to system and ss [ev]
+                            rho=0.d0,cord=0.d0,       & !densidad.. o algun otro parametro
+                            border=0.d0                 !Orden de Enlace
+
+  real(dp)               :: maxdisp2=0 !desplazamiento maximo a un determinada T de grupo
+
   contains
 
   procedure :: init => atom_allocate
   procedure :: dest => atom_destroy
 
-  procedure :: setz => atom_setelmnt
+  procedure :: setz => atom_setelmnt_byz
+  procedure :: setsym => atom_setelmnt_bysym
 
   !procedure :: del => atom_atom_del
   !procedure :: delall => atom_allatom_del
@@ -311,9 +388,22 @@ public :: atom_ap
 
 ! Module procedures 
 
-public :: atom_asign
+interface atom_setelmnt
+  module procedure atom_setelmnt_bysym,atom_setelmnt_byz
+end interface
+public :: atom_setelmnt,atom_asign, vdistance
                    
+! Ghosts
+! ======
+public :: ghost_from_atom, pbcghost_move, pbcghost, pbchalfghost
+public :: set_pbc, do_pbc
    
+! Groups for selection
+type(group),target,public    :: ghost
+
+! Ghost atoms. No need index.
+logical,public              :: useghost=.false.
+    
 contains
       
 ! atom events
@@ -331,24 +421,93 @@ class(atom),intent(inout)    :: a
 ! crear un atomo
 allocate(a%gr(10))
 allocate(a%id(10))
+allocate(a%pos(dm))
+allocate(a%vel(dm))
+allocate(a%force(dm))
+allocate(a%acel(dm))
 a%acel(:)=0._dp
 a%pos(:)=0._dp
 a%vel(:)=0._dp
 a%force(:)=0._dp
-call a%setz('F')
-
+call atom_setelmnt(a,119)
 end subroutine atom_allocate
 
+subroutine atom_setpbc(a,pbc)
+! Set atom pbc and allocate ghosts  
+class(atom),target,intent(inout) :: a
+logical,intent(in)               :: pbc(dm)
+class(group),pointer             :: g
+type(atom),pointer               :: og
+integer                          :: i,j
+
+a%pbc(:)=pbc(:)
+
+! Already allocated, skip
+if(allocated(a%ghost)) then
+
+  ! Also deallocate if all false
+  if(.not.any(pbc)) then
+    do i=1,7  
+      og => a%ghost(i)%o
+      call og%dest()
+      deallocate(og)
+    enddo
+    deallocate(a%ghost)
+  endif  
+ 
+endif  
+
+if(.not.any(pbc)) return
+
+! Allocate ghost 
+! TODO: if count(pbc)<3 do not use 7
+allocate(a%ghost(7))
+do i=1,7  
+
+  allocate(a%ghost(i)%o)
+  og => a%ghost(i)%o
+
+  call og%init()
+  og%prime=>a
+  call atom_asign(og,a)
+  og%q=a%q
+  og%pbc(:)=.false.
+  
+enddo
+
+end subroutine atom_setpbc
+    
 subroutine atom_destroy(a)
 class(atom)         :: a
-integer             :: i,j
+type(atom),pointer  :: og
+integer             :: i
 
-! Dettach the atom from all the groups
+! Detach the atom from all the groups using a LIFO scheme. Since some
+! attach/deatach precedures may depend on other atom memberships, remeber
+! to build these group dependencies considering the present LIFO
+! destruction.
 do while (a%ngr/=0)
-  call a%gr(1)%o%detach(a)
+  call a%gr(a%ngr)%o%detach(a)
 enddo
 deallocate(a%gr,a%id)
+ 
+deallocate(a%pos)
+deallocate(a%vel)
+deallocate(a%force)
+deallocate(a%acel)
 
+a%prime => null()  
+if(.not.allocated(a%ghost)) return
+
+do i=1,7  
+  og=>a%ghost(i)%o
+  do while (og%ngr/=0)
+    call og%gr(og%ngr)%o%detach(og)
+  enddo
+  deallocate(a%ghost(i)%o)
+enddo
+deallocate(a%ghost)
+   
 end subroutine atom_destroy
  
 function atom_destroy_attempt(a) result(r)
@@ -372,16 +531,30 @@ subroutine atom_asign(a1,a2)
 ! o un arreglo duro, no importa.
 type(atom) :: a1,a2
 
-a1%m        = a2%m
-a1%pos(:)   = a2%pos(:)
-a1%vel(:)   = a2%vel(:)
-a1%force(:) = a2%force(:)
-a1%acel(:)  = a2%acel(:)
-call a1%setz(a2%sym)
+a1 % pos(:)   = a2 % pos(:)
+a1 % vel(:)   = a2 % vel(:)
+a1 % force(:) = a2 % force(:)
+a1 % acel(:)  = a2 % acel(:)
+a1 % pbc(:)   = a2 % pbc(:)
+call atom_setelmnt(a1,a2%z)
 
+a1 % acel(:)    = a2 % acel(:)
+a1 % acel2(:)   = a2 % acel2(:)
+a1 % acel3(:)   = a2 % acel3(:)
+a1 % acel4(:)   = a2 % acel4(:)
 a1 % pos_old(:) = a2 % pos_old(:)
+a1 % pos_v(:)   = a2 % pos_v(:)
+a1 % vel_v(:)   = a2 % vel_v(:)
 
-a1 % energy    = a2 % energy
+a1 % epot    = a2 % epot
+a1 % erot    = a2 % erot
+a1 % erot_ss = a2 % erot_ss
+a1 % evib    = a2 % evib
+a1 % evib_ss = a2 % evib_ss
+a1 % rho     = a2 % rho
+a1 % molid   = a2 % molid
+a1 % sp      = a2 % sp
+a1 % s       = a2 % s
 
 end subroutine atom_asign
 
@@ -467,30 +640,40 @@ endif
  
 end function atom_id
                
-! others
-! -------
+! properties
+! ----------
 
-subroutine atom_setelmnt(a,z)
+subroutine atom_setelmnt_byz(a,z)
 ! Establece las propiedades relacionadas al elemento en un atomo
 class(atom)               :: a
-character(*),intent(in)   :: z
+integer                   :: z
 
+! FIXME: What if is not there???
 
-select case(z)
-case('Li')
- a%sym='Li'
- a%tipo=1
-case('CG')
- a%sym='CG'
- a%tipo=2
-case('F')
- a%sym='F'
- a%tipo=3
-case default
-end select
+a%z = z
+a%mass = elements%o(z)%mass
+a%sym = elements%o(z)%sym
+if(a%mass==0._dp) then
+  a%one_mass = 0._dp
+  a%one_sqrt_mass = 0._dp
+else
+  a%one_mass = 1.0_dp/a%mass
+  a%one_sqrt_mass = sqrt(a%one_mass)
+endif
 
 end subroutine
 
+subroutine atom_setelmnt_bysym(a,sym)
+use gems_elements,only:add_z, inq_z
+class(atom)    :: a
+character(*)   :: sym
+
+! Adding z just in case is not there
+call add_z(sym)
+
+call atom_setelmnt_byz(a,inq_z(sym))
+end subroutine
+      
 ! group events
 ! ============
                
@@ -545,7 +728,19 @@ call g%detach_all()
 deallocate(g%alist)  
 
 end subroutine group_destroy
+ 
+subroutine group_write(g, unit, iotype, v_list, iostat, iomsg)
+class(group),intent(in)   :: g
+integer,intent(in)         :: unit
+character(*),intent(in)    :: iotype
+integer,intent(in)         :: v_list(:)
+integer,intent(out)        :: iostat
+character(*),intent(inout) :: iomsg  
 
+write(unit,*) "PEPE"
+
+end subroutine
+ 
 ! Include atoms
 ! -------------
  
@@ -566,7 +761,7 @@ g%nat = g%nat + 1 ! numero de particulas
 call a%addgr(g)
 
 ! propiedades basicas para modificar
-g%mass = g%mass + a % m ! masa
+g%mass = g%mass + a % mass ! masa
 
 ! si esta vectorial, ahora no tiene sentido
 if(associated(g%pp)) then
@@ -575,6 +770,8 @@ if(associated(g%pp)) then
   deallocate(g%pa)
   deallocate(g%pf)
 endif
+
+call all_changed(g)
 
 end subroutine group_attach_atom
 
@@ -600,17 +797,17 @@ subroutine group_detach_link(g,la)
 ! Detach link `la` from group `alist`
 ! It return previous link in `la`
 class(group)               :: g
-class(atom), pointer       :: o
+class(atom), pointer       :: a
 type(atom_dclist), pointer :: la, prev
 integer                    :: n
 
 ! Delete group from atom register
-o=>la%o
-n=o%ngr
-call o%delgr(g)
+a=>la%o
+n=a%ngr
+call a%delgr(g)
 
 ! Return if atom was not in group  
-if(o%ngr==n) return  
+if(a%ngr==n) return  
                   
 ! Delete group id from atom `gr` list
 prev=>la%prev
@@ -620,7 +817,9 @@ la=>prev
 
 ! TODO: propiedades extras para modificar?
 g%nat = g%nat - 1
-g%mass = g%mass - o%m
+g%mass = g%mass - a%mass
+
+call all_changed(g)
 
 end subroutine group_detach_link
            
@@ -644,90 +843,160 @@ do i =1,g%nat
   return
 enddo
 
+! TODO: this might be handle in a higher level?
+! Also detach ghosts
+if(allocated(a%ghost)) then
+  do i=1,7  
+    call g%detach(a%ghost(i)%o)
+  enddo
+endif  
+ 
 end subroutine group_detach_atom
 
 subroutine group_detach_all(g)
-! Detach all atoms from group
-class(group)               :: g
-type(atom_dclist), pointer :: la,next
+! Detach all atoms from `g`
+class(group)        :: g
+type(atom), pointer :: a
 
-! Circulo por la lista hasta que la vacio
-la => g%alist%next
 do while(g%nat/=0)
-  next => la%next
-    
-  ! Delete group id from atom `gr` list
-  call la%o%delgr(g)
-    
-  ! Deattach the link from the group
-  call la%deattach()
-  deallocate(la)
-  g%nat = g%nat - 1
-
-  la=>next
+  a => g%alist%next%o
+  call g%detach_atom(a)
 enddo
-
-! TODO: propiedades extras para modificar?
-g%nat = 0
-g%mass = 0._dp
 
 end subroutine group_detach_all
 
 subroutine group_all_destroy_attempt(g)
-! Detach all atoms from group
-class(group)               :: g
-type(atom_dclist), pointer :: la
-type(atom), pointer        :: o
+! Detach all atoms from `g` and destroy free atoms.
+class(group)        :: g
+type(atom), pointer :: a
 
-! Circulo por la lista hasta que la vacio
-la => g%alist
 do while(g%nat/=0)
-  la=>la%next
-  o=>la%o
-    
-  ! Detach
-  call g%detach_link(la)
-
-  if (o%ngr==0) then
-    call o%dest()
-    deallocate(o)
+  a => g%alist%next%o
+  call g%detach_atom(a)
+ 
+  if (a%ngr==0) then
+    call a%dest()
+    deallocate(a)
   endif
    
 enddo
 
-! TODO: propiedades extras para modificar?
-g%nat = 0
-g%mass = 0._dp
-
 end subroutine group_all_destroy_attempt
 
 subroutine group_all_destroy(g)
-! Detach all atoms from group
+! Destroy all atoms from group
 class(group)               :: g
 type(atom_dclist), pointer :: la
-type(atom), pointer        :: o
+type(atom), pointer        :: a
 
-! Circulo por la lista hasta que la vacio
-la => g%alist
 do while(g%nat/=0)
-  la=>la%next
-  o=>la%o
-    
-  ! Detach
-  call g%detach_link(la)
-
-  ! Destroy
-  call o%dest()
-  deallocate(o)
-   
+  a => g%alist%next%o
+  ! call g%detach_atom(a)
+  call a%dest()
+  deallocate(a)
 enddo
-
-! TODO: propiedades extras para modificar?
-g%nat = 0
-g%mass = 0._dp
-    
+   
 end subroutine group_all_destroy
 
+! Group Update Properties 
+! -----------------------
+! A change in 1 group implies a potential change in all of them: if an atom
+! changes, all groups might include that atom. Thus, all this update system
+! is only useful while nothing change.
+! TODO: I should build/check connections between groups to selectively update?
+                 
+subroutine gindex_all_changed()
+integer :: i  
+do i=1,gindex%size
+  call gindex%o(i)%o%all_changed()
+enddo
+end subroutine gindex_all_changed
+                  
+subroutine gindex_pos_changed()
+integer :: i  
+do i=1,gindex%size
+  call gindex%o(i)%o%pos_changed()
+enddo
+end subroutine gindex_pos_changed
+                   
+subroutine gindex_vel_changed()
+integer :: i  
+do i=1,gindex%size
+  call gindex%o(i)%o%vel_changed()
+enddo
+end subroutine gindex_vel_changed
+                    
+subroutine gindex_epot_changed()
+integer :: i  
+do i=1,gindex%size
+  call gindex%o(i)%o%epot_changed()
+enddo
+end subroutine gindex_epot_changed
+                  
+subroutine all_changed(g)
+class(group) :: g
+g%b_mass     =.false.
+g%b_erot     =.false.
+g%b_evib     =.false.
+g%b_cm_vel   =.false.
+g%b_ang_mom  =.false.
+g%b_ang_vel  =.false.
+g%b_maxpos   =.false.
+g%b_minpos   =.false.
+g%b_mainaxis =.false.
+g%b_cm_pos   =.false.
+g%b_rg_pos   =.false.
+g%b_covar    =.false.
+g%b_inercia  =.false.
+g%b_virial   =.false.
+g%b_pressure =.false.
+g%b_ekin    =.false.
+g%b_temp    =.false.
+g%b_tempvib =.false.
+g%b_temprot =.false.
+g%b_mass     =.false.
+call epot_changed(g)
+end subroutine all_changed
+            
+subroutine pos_changed(g)
+class(group) :: g
+g%b_erot     =.false.
+g%b_evib     =.false.
+g%b_cm_vel   =.false.
+g%b_ang_mom  =.false.
+g%b_ang_vel  =.false.
+g%b_maxpos   =.false.
+g%b_minpos   =.false.
+g%b_mainaxis =.false.
+g%b_cm_pos   =.false.
+g%b_rg_pos   =.false.
+g%b_covar    =.false.
+g%b_inercia  =.false.
+g%b_virial   =.false.
+g%b_pressure =.false.
+call epot_changed(g)
+end subroutine pos_changed
+
+subroutine epot_changed(g)
+class(group) :: g
+g%b_epot  =.false.
+g%b_virial =.false.
+end subroutine epot_changed
+                          
+subroutine vel_changed(g)
+class(group) :: g
+g%b_ekin    =.false.
+g%b_temp    =.false.
+g%b_tempvib =.false.
+g%b_temprot =.false.
+g%b_erot    =.false.
+g%b_evib    =.false.
+g%b_cm_vel  =.false.
+g%b_ang_mom =.false.
+g%b_ang_vel =.false.
+g%b_pressure =.false.
+end subroutine vel_changed
+                    
 ! Select atoms
 ! ------------
 
@@ -748,6 +1017,64 @@ at => la%o
 
 endfunction
 
+! Properties
+! ----------
+
+function vdistance(i,j,mic) result(vd)
+!calculates the distance of two atoms with or without minimum image convention
+use gems_program_types, only: box, one_box
+real(dp),dimension(dm)  :: vd
+type(atom),intent(in)   :: i,j
+logical,intent(in)      :: mic
+logical                 :: pbc(dm)
+integer                 :: l
+  
+! Distancia
+vd=i%pos-j%pos
+
+! Convencion de imagen minima
+if(.not.mic) return
+
+! Mas rapido usar idnint que un if
+pbc=i%pbc.or.j%pbc
+do l = 1,dm
+  if (pbc(l)) vd(l)=vd(l)-box(l)*idnint(vd(l)*one_box(l))
+enddo
+
+end function vdistance
+                 
+! Basic inquires
+! --------------
+
+function inq_insphere(g,ctr,rad2)  result(over)
+! Check whether the position of any atom of g lies within a spherical region in space.
+use gems_program_types, only: distance
+class(group),intent(in)     :: g
+real(dp), intent(in)        :: ctr(dm), rad2
+logical                     :: over
+type(atom_dclist), pointer  :: la
+real(dp)                    :: idist,interatomic,first
+integer                     :: i
+real(dp)                    :: vd(dm), rd
+
+over=.true.
+
+la => la%next
+do i = 1,g%nat
+  la => la%next
+  
+  vd(:) = distance(la%o%pos,ctr,la%o%pbc)
+  rd = dot_product(vd,vd)
+
+  if (rd<rad2) return
+   
+enddo
+
+over=.false.
+
+end function 
+          
+ 
 ! igroup events (indexed atoms)
 ! =============================
 
@@ -755,15 +1082,35 @@ subroutine igroup_construct(g)
 class(igroup),target    :: g
 call group_construct(g)
 allocate(g%a(g%pad))
+allocate(g%limbo)  
 end subroutine igroup_construct
 
-subroutine igroup_destroy (g)
+subroutine igroup_destroy(g)
 class(igroup),target :: g
 call group_destroy(g)
-! TODO: No needed, allocatable components are deallocated at type deallocation
 deallocate(g%a) 
+deallocate(g%limbo)  
 end subroutine igroup_destroy
 
+subroutine igroup_clean(g)
+class (igroup),target  :: g
+integer                :: i
+
+if(.not.g%b_limbo) return
+
+do i =1,g%amax
+  if(associated(g%a(i)%o,target=g%limbo)) then
+    g%a(i)%o=>null()
+  endif
+enddo
+
+g%nlimbo=0
+g%b_limbo=.false.
+
+! Update index might be done here.
+
+end subroutine igroup_clean
+                
 ! Include atoms
 ! -------------
 
@@ -771,7 +1118,7 @@ subroutine igroup_attach_atom(g,a)
 class(igroup),target :: g
 class(atom),target   :: a
 type(atom_ap),allocatable  :: t_a(:)
-integer                    :: n
+integer                    :: n, m
 
 ! Save current atom number
 n=g%nat
@@ -784,23 +1131,23 @@ if(n==g%nat) return
 
 ! Reallocate if needed
 n=size(g%a)
-if(n<g%nat) then
-  allocate(t_a(g%nat+g%pad))
+m=g%nat+g%nlimbo
+if(n<m) then
+  allocate(t_a(m+g%pad))
   t_a(1:n) = g%a(1:n)
   call move_alloc(to=g%a,from=t_a)
 endif
    
-! Find an index position
-if(g%amax<g%nat) then 
-  ! Append
-  g%amax=g%amax+1
-  n=g%amax
-  call werr('Index inconsistency while attaching',g%nat/=g%amax)
-else 
+if(g%amax>=g%nat+g%nlimbo) then 
   ! Find index of previous deattached atom
   do n=1,g%amax
     if(.not.associated(g%a(n)%o)) exit
   enddo
+  call werr('Index inconsistency',n>g%amax)
+else
+  ! Append
+  g%amax=g%amax+1
+  n=g%amax
 endif
  
 ! Set atom index
@@ -813,7 +1160,7 @@ end subroutine igroup_attach_atom
 ! ------------
 
 subroutine igroup_detach_atom(g,a)
-! Remove soft atom (i.e. detach) from `alist` and `a`
+! Detach atom from `alist` and `a`
 class(igroup)              :: g
 class(atom),target         :: a
 integer                    :: i
@@ -828,17 +1175,24 @@ g%a(i)%o=>null()
 ! Detach atom
 call group_detach_atom(g,a)
 
-! Update index if "null" count is above a fraction of array size.  
-if ((g%amax-g%nat)>size(g%a)*g%aupd) call igroup_update_index(g)
+! Update index if null count is above a fraction of the array size.  
+if ((g%amax-g%nat)>size(g%a)*g%aupd) then
+  call igroup_update_index(g)
+else
+  g%update=.false.
+endif
 
 end subroutine igroup_detach_atom
      
 subroutine igroup_update_index(g)
 ! Update index
+use gems_strings, only: operator(.ich.)
+use gems_errors, only: wlog, werr
 class(igroup)              :: g
 class(atom),pointer        :: a
 integer                    :: i,j,k
 
+! Skip if there is not null components
 if(g%amax==g%nat) return
 
 i=0
@@ -862,11 +1216,386 @@ do j=1,g%amax
 enddo
 
 call werr('Index inconsistency while updating',g%nat/=i)
-
 g%amax=g%nat
+
+! Signal out to rebuild internal arrays in extended types.
+g%update=.true. 
+
+! Write into log file 
+! TODO: Build a warning if several calls are made to this subroutine
+! and set up a CLI to control/deactivate `aupd`
+call wlog('Index of group '//.ich.g%id//' updated')
 
 end subroutine igroup_update_index
 
+! Ghosts
+! ======
+
+function new_ghost(o2,r) result(o)
+use gems_program_types, only: box
+class(atom),target,intent(in)  :: o2
+type(atom),pointer             :: o
+class(group),pointer           :: g
+integer                        :: j,i
+integer                        :: r(:)
+
+! Allocate new ghost
+allocate(o)
+call o%init()
+call ghost%attach(o)
+
+! Assign image properties
+o%prime=>o2
+call atom_asign(o,o2)
+o%q=o2%q
+o%pbc(:)=.false.
+o%pos(:)=o2%pos(:)+r(:)*box(:)
+o%boxcr(:)=r(:)
+
+! Add ghost to the image ngroups
+do j=1,o2%ngr
+  g => o2%gr(j)%o
+  if(g%ghost) call g%attach(o)
+enddo
+
+end function
+
+function isghost(r,rc)
+! Return .true. if r inside the box+rcut. So actually it says if some position
+! belong to a ghost region but also if is a local region
+use gems_program_types, only: box
+real(dp),intent(in)  :: r(dm),rc
+logical              :: isghost
+integer              :: i
+
+isghost=.false.
+do i=1,dm
+  ! s=sign(1,r(i)-box2(i))
+  ! if (s*r(i)>rc+box*0.5_dp*(s+1)) return
+
+  if(r(i)<-rc) then
+    return
+  elseif (r(i)>rc+box(i)) then
+    return
+  endif
+enddo
+isghost=.true.
+
+end function isghost
+
+subroutine ghost_from_atom(a,rcut)
+! Create ghost images for an atom.
+use gems_program_types, only: box, one_box, n1cells
+real(dp)                     :: r(dm)
+real(dp),intent(in)          :: rcut
+type(atom)                   :: a
+integer                      :: m
+ 
+do m =1,26
+  r(:)=a%pos(:)+n1cells(m,:)*box(:)
+  if (isghost(r(:),rcut)) a%ghost(m)%o => new_ghost(a,n1cells(m,:))
+enddo
+ 
+end subroutine ghost_from_atom
+     
+subroutine pbcghost_move()
+! Move ghost atoms to reflect the motion of their local images
+use gems_program_types, only: box
+type(atom_dclist), pointer :: la
+integer                    :: i
+
+la => ghost%alist
+do i = 1,ghost%nat
+  la => la%next
+  la%o%pos(:)=la%o%prime%pos(:)+box(:)*la%o%boxcr(:)
+enddo
+
+end subroutine
+
+subroutine pbchalfghost(rcut)
+! Create and destroy ghost for a pbc box.
+use gems_program_types, only: box, n1cells
+type(atom),pointer           :: o,og
+integer                      :: i,j,k
+type(atom_dclist),pointer    :: la
+real(dp),intent(in)          :: rcut
+integer                      :: reps(dm), pbc
+
+! Make local atoms pbc
+call do_pbc(sys)
+
+la => sys%alist
+do i = 1,sys%nat
+  la => la%next
+  o => la%o
+
+  ! Check pbc
+  pbc=count(o%pbc)
+
+  ! TODO: when rcut is grater than half box add more images
+  ! TODO: when rcut is less than half box, may have no sense to add/destroy
+  ! ghost atoms
+
+  ! Set ghost(1:3) at the box sides
+  if (pbc==0) cycle
+  do k=1,dm
+    if (o%pos(k)>.5*box(k)) then
+      reps(k)=-1
+    else
+      reps(k)=1
+    endif
+    og=>o%ghost(k)%o
+    og%boxcr(:)=0
+    og%boxcr(k)=reps(k)
+    og%pos(:)=o%pos(:)+box(:)*og%boxcr(:)
+    call ghost_switch(og,rcut)
+  enddo 
+      
+  ! Set ghosts(4:6) at the box edges
+  if (pbc==1) cycle
+  do j=1,dm-1
+    if (.not.o%pbc(j)) cycle
+    do k=j+1,dm
+      if(.not.o%pbc(k)) cycle
+      og=>o%ghost(j+k+1)%o
+      og%boxcr(:)=0
+      og%boxcr(j)=reps(j)
+      og%boxcr(k)=reps(k)
+      og%pos(:)=o%pos(:)+box(:)*og%boxcr(:)
+      call ghost_switch(og,rcut)
+    enddo 
+  enddo 
+  
+  ! Set ghosts(7) at the box korner
+  if (pbc==2) cycle
+  og=>o%ghost(7)%o
+  og%boxcr(:)=reps(:)
+  og%pos(:)=o%pos(:)+box(:)*og%boxcr(:)
+  call ghost_switch(og,rcut)
+
+enddo
+
+
+end subroutine
+     
+
+subroutine ghost_switch(og,rcut)
+use gems_program_types, only: box, n1cells
+type(atom),pointer      :: og, o
+class(group),pointer    :: g
+integer                 :: i
+real(dp)                :: rcut
+ 
+o=>og%prime
+
+! Check if ghost atoms is needed
+if (isghost(og%pos(:),rcut)) then
+
+  ! If ghost already activated, exit
+  if(og%ngr>0) return
+
+  ! Ensure ghosts are in the same groups than prime atom
+  ! FIXME: detach if ghost is in another group
+  do i=1,o%ngr
+    g => o%gr(i)%o
+    if(g%ghost) call g%attach(og)
+  enddo
+  call ghost%attach(og)
+            
+else
+
+  ! If ghost already deactivated, exit
+  if(og%ngr==0) return
+
+  do while (og%ngr/=0)
+    call og%gr(og%ngr)%o%detach(og)
+  enddo   
+
+end if
+
+end subroutine    
+                        
+
+subroutine pbcghost(rcut)
+! Create and destroy ghost for a pbc box.
+use gems_program_types, only: box, n1cells
+real(dp)                     :: r(dm)
+type(atom),pointer           :: o,og
+integer                      :: i,m
+type(atom_dclist),pointer    :: la
+real(dp),intent(in)          :: rcut
+
+! Make local atoms pbc
+call do_pbc(sys)
+
+la => sys%alist
+do i = 1,sys%nat
+  la => la%next
+  o => la%o
+
+  ! Loop trough box images
+  ! Note: seems to check proximity to the 6 faces can be fast?
+  do m = 1,26
+    og => la%o%ghost(m)%o
+
+    ! Check if ghost atoms is needed
+    r(:)=o%pos(:)+n1cells(m,:)*box(:)
+    if (isghost(r(:),rcut)) then
+
+      ! If ghost already exist, skip
+      if(associated(og)) cycle
+    
+      ! Add new ghost
+      og => new_ghost(o,n1cells(m,:))
+
+    else
+ 
+      ! If ghost exist, remove it
+      if(associated(og)) call og%dest()
+      og => null()
+         
+    end if
+
+    o%ghost(m)%o => og
+
+  enddo
+
+enddo
+
+
+end subroutine
+
+! PBC
+! ---
+
+subroutine set_pbc(g,pbc)
+class(group),intent(inout)  :: g
+class(atom_dclist),pointer  :: la
+logical,intent(in)         :: pbc(dm)
+integer                    :: i
+
+la => g%alist
+do i = 1,g%nat
+  la => la%next
+  call atom_setpbc(la%o,pbc)
+enddo
+
+end subroutine set_pbc
+ 
+subroutine do_pbc(g)
+use gems_program_types, only: box
+class(group),intent(inout)  :: g
+class(atom_dclist),pointer  :: la
+type(atom),pointer          :: o
+integer                     :: i,k
+
+la => g%alist
+do i = 1,g%nat
+  la => la%next
+  o => la%o
+
+  do k=1,dm
+    if (o%pbc(k)) then
+      if(o%pos(k)>=box(k)) then
+        o%pos(k)=o%pos(k)-box(k)
+        o%pos_old(k)=o%pos_old(k)-box(k)
+        o%boxcr(k)=o%boxcr(k)+1
+      elseif(o%pos(k)<0.0_dp) then
+        o%pos(k)=o%pos(k)+box(k)
+        o%pos_old(k)=o%pos_old(k)+box(k)
+        o%boxcr(k)=o%boxcr(k)-1
+      endif
+    endif
+  enddo
+enddo
+     
+end subroutine do_pbc
+                     
+
+! Hyper vector Constructors
+! =========================
+
+! El echo de que el grupo sea una lista linkeada esta indicando que es una
+! selecciona caprichosa de atomos. Esto permite aplicar disitntas subrutinas a
+! distintas selecciones caprichosas.
+
+! En muchas subrutinas, y para muchas cosas, es util constar con vectores que
+! representen el estado de este grupo.
+
+! Las subrutinas que siguen a continuacion son un parche para lograr esto. Las
+! variables atomicas, se encuentran inicialmente apuntando a vectores en el
+! systema. Luego de la seleccion caprichos por un grupo, se puede copiar
+! las variables atomicas a un vector y asociar los atomos a ese vector,
+! logrando asi un ordenamiento del grupo de forma vectorial. Si este
+! ordenamiento no existe, los punteros del grupo tendran la condicion null. Si
+! por el contrario este ordenamiento existe, los punteros del grupo apuntaran
+! al vector determinado. Esto involucra ciertos manejos que se deben realizar
+! con las siguientes subrutinas:
+
+subroutine group_switch_vectorial(g,switched)
+class(group),intent(inout)     :: g
+logical,optional,intent(out)   :: switched
+integer                        :: i
+type (atom_dclist),pointer     :: la
+
+if(present(switched)) switched=.false.
+if(associated(g%pp)) return
+if(present(switched)) switched=.true.
+
+allocate(g%pp(g%nat*dm))
+allocate(g%pv(g%nat*dm))
+allocate(g%pa(g%nat*dm))
+allocate(g%pf(g%nat*dm))
+
+la => g%alist
+do i = 1,g%nat
+  la => la%next
+  g%pp((i-1)*dm+1:i*dm) =  la%o%pos
+  g%pv((i-1)*dm+1:i*dm) =  la%o%vel
+  g%pf((i-1)*dm+1:i*dm) =  la%o%force
+  g%pa((i-1)*dm+1:i*dm) =  la%o%acel
+  deallocate(la%o%pos  )
+  deallocate(la%o%vel  )
+  deallocate(la%o%force)
+  deallocate(la%o%acel )
+  la%o%pos    => g%pp((i-1)*dm+1:i*dm)
+  la%o%vel    => g%pv((i-1)*dm+1:i*dm)
+  la%o%force  => g%pf((i-1)*dm+1:i*dm)
+  la%o%acel   => g%pa((i-1)*dm+1:i*dm)
+enddo
+
+end subroutine
+
+subroutine group_switch_objeto(g,switched)
+class(group),intent(inout)     :: g
+logical,optional,intent(out)   :: switched
+integer                        :: i
+type (atom_dclist),pointer     :: la
+
+if(present(switched)) switched=.false.
+if(.not.associated(g%pp)) return
+if(present(switched)) switched=.true.
+
+
+la => g%alist
+do i = 1,g%nat
+  la => la%next
+  allocate(la%o%pos  (dm))
+  allocate(la%o%vel  (dm))
+  allocate(la%o%force(dm))
+  allocate(la%o%acel (dm))
+  la%o%pos    = g%pp((i-1)*dm+1:i*dm)
+  la%o%vel    = g%pv((i-1)*dm+1:i*dm)
+  la%o%force  = g%pf((i-1)*dm+1:i*dm)
+  la%o%acel   = g%pa((i-1)*dm+1:i*dm)
+enddo
+
+deallocate(g%pp); g%pp=>null()
+deallocate(g%pv); g%pv=>null()
+deallocate(g%pa); g%pa=>null()
+deallocate(g%pf); g%pf=>null()
+
+end subroutine
 
 end module gems_groups
 

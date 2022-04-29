@@ -1,13 +1,11 @@
 program din_mol_Li
   use gems_groups
   use gems_neighbor
+  use gems_elements, only: set_z, elements_init
   use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_t2, wstd, sclock_max, sclock_rate,logunit
-  use gems_constants, only: time1
+  use gems_constants, only: time1, dp, sp
 
   implicit none
- 
-  integer, parameter    :: sp   = kind(1.0)
-  integer, parameter    :: dp   = kind(1.0d0)
  
   !Cosas del sistema  #what a quilombo
   integer               :: n, nx, nchunk        ! Nros de particulas
@@ -66,7 +64,13 @@ program din_mol_Li
   call system_clock(count_rate=sclock_rate)
   call system_clock(count_max=sclock_max)
   call system_clock(sclock_t1)
-               
+                     
+  ! Elements used
+  call elements_init()
+  call set_z(1,sym='Li',mass=6.94_dp)
+  call set_z(2,sym='CG',mass=6.94_dp)
+  call set_z(3,sym='F',mass=6.94_dp)
+            
   ! Valores de epsilon y r0 :P
   eps(:,2) = 0
   r0(:,2)  = 0
@@ -88,11 +92,11 @@ program din_mol_Li
   call ngindex%init()
   call sys%init()
 
+  nb_dcut=10._dp        ! The shell length for verlet update criteria
+ 
   ! Init lista para choques de esferas duras
   call hs%init()
   call hs%setrc(3.2_dp) ! Maximo radio de corte
-  nb_dcut=10._dp        ! The shell length for verlet update criteria
- 
   call config()
 
   ! Grupo chunk
@@ -111,7 +115,7 @@ program din_mol_Li
   call config_inic()
 
   !Search neighbors
-  call update()
+  call test_update()
 
   if (integrador) call fuerza(hs,eps,r0)
 
@@ -236,8 +240,10 @@ end subroutine entrada
 
 ! Leer configuración inicial
 subroutine config_inic()
+use gems_program_types, only: tbox, box_setvars  
 integer :: i
 type(atom_dclist), pointer :: la
+character(10)     :: sym
 
 ! Tamaños iniciales de "reservorio"
 if (reserva) then
@@ -270,8 +276,8 @@ do i=1,n
   allocate(pa)
   call pa%init()
 
-  read(11,*) pa%sym,pa%pos(:),pa%m
-  call pa%setz(pa%sym) ! Asigna algunos valores según tipo de átomo
+  read(11,*) sym,pa%pos(:)
+  call pa%setsym(sym) ! Asigna algunos valores según tipo de átomo
   pa%force(:)=0._dp
   pa%pos_old(:)=pa%pos(:)
 
@@ -300,8 +306,12 @@ close(11)
 allocate(ranv(n,3))
 
 ! Set the box
-box(:)=100._dp
-box(3)=zmax
+tbox(:,:)=0._dp
+tbox(1,1)=100._dp
+tbox(2,2)=100._dp
+tbox(3,3)=zmax
+call box_setvars()
+ 
 
 ! Calculo la velocidad neta del sistema/Sino como que se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
 ! internas ;)
@@ -331,6 +341,7 @@ end subroutine config_inic
 ! Leer chunk de atoms:
 subroutine config_chunk()
 integer :: j
+character(10)  :: sym
 
 open(11,File='chunk.xyz')
 read(11,*) nchunk
@@ -341,8 +352,8 @@ do j=1,nchunk
   call pb%init()
 
   ! Asigna propiedades al bloque de partículas
-  read(11,*) pb%sym,pb%pos(:),pb%m
-  call pb%setz(pb%sym)
+  read(11,*) sym,pb%pos(:)
+  call pb%setsym(sym)
   pb%force(:)=0._dp
   pb%pos_old(:)=pb%pos(:)
 
@@ -375,14 +386,14 @@ subroutine salida()  ! Escribe los datos calc. :P
   write(11,*) "info:",zmax,sys%nat
   do j =1, sys%nat
    pa=>sys%a(j)%o
-   write(11,*) pa%sym,pa%pos(:),pa%tipo
+   write(11,*) pa%sym,pa%pos(:),pa%z
 
    ! Para el otro archivo de salida
-   energia= energia + pa%energy 
+   energia= energia + pa%epot 
   enddo
 
   ! t, suma Epot+Ecin 
-  write(12,*) t, energia !sum(sys%a(:)%o%energy)
+  write(12,*) t, energia !sum(sys%a(:)%o%epot)
 
   call kion(sys,temp) 
   write(13,*)t,temp
@@ -425,6 +436,7 @@ subroutine calc_rho(rho) !Densidad/concentrac.
 end subroutine calc_rho
 
 subroutine bloques(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
+use gems_program_types, only: tbox, box_setvars  
   class(group)    :: g1, g2
   type(atom_dclist), pointer :: la
   type(atom),pointer    :: o1,o2
@@ -451,9 +463,9 @@ subroutine bloques(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
      call g1%attach(o2) ! Sys
 
      ! Lista de vecinos
-     call hs%attach(o2)
      call hs%b%attach(o2)
      call hs%ref%attach(o2)
+     call hs%attach(o2)
 
      ! TODO: call wwan("Posibilidad de colision",o1%pos(3)<hs%rcut)
      ! Si vos cambias el rcut, esto te va a hacer acordar de crear un nuevo chunk.
@@ -471,8 +483,9 @@ subroutine bloques(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
   n= n + nx 
 
   ! Agrega nuevos vecinos para los atomos agregados y los cercanos
-  box(3)=zmax 
-  call update()
+  tbox(3,3)=zmax 
+  call box_setvars()
+  call test_update()
                    
 end subroutine bloques
 
@@ -497,32 +510,6 @@ subroutine maxz(zmax)
   zmax=zmax-lohi*(zmax-z0)
 
 end subroutine maxz
-
-subroutine set_sym(a,z) !Asigna tipo a partíc.
-  character(*),intent(in)     :: z
-  class(atom)                 :: a
-
-  if(i>n) then ! ¿o sys%nat?
-    print *, '¡Error! partíc. no existe'
-    stop
-  endif
-
-  !pa=>sys%a(i) !Lee el i (intent(in)) y lo asigna luego
-  select case(z) !z=símbolo de átomo
-  case('Li')
-   a%sym='Li' 
-   a%tipo=1
-  case('CG')
-   a%sym='CG'
-   a%tipo=2
-  case('F')
-   a%sym='F'
-   a%tipo=3
-  case default
-
-  end select
-
-end subroutine set_sym
 
 
 ! Integrac. browniana
@@ -583,7 +570,7 @@ do i = 1, g%ref%nat
   la=> la%next
   o1=> la%o
   if (o1%sym/='F') cycle
-  call o1%setz('CG')
+  call o1%setz(2) ! CG
   call g%ref%detach(o1)
 enddo
                
@@ -610,12 +597,12 @@ do jj = 1, g%nn(i)  ! sobre los vecinos
 
   ! Deposicion por contacto con otra particula metalica
   ! 1.19 es el radio de Mayers
-  if (o2%tipo==2) then
+  if (o2%z==2) then
     ! if(dr> 1.4161_dp) cycle
     
     ne=ran(idum)
     if(ne<prob) then
-      call o1%setz('F')   ! Es inerte en este paso de tiempo
+      call o1%setz(3)   ! F. Es inerte en este paso de tiempo
 
       ! Permite deposicion en cadena pero depende del atom id.
       ! Si queremos deposicion en cadnea sería mejor programarla
@@ -687,7 +674,7 @@ if(o1%pos(3)<=0._dp) then
   ne=ran(idum)
 
   if(ne<prob) then
-    call o1%setz('F')   ! Es inerte en este paso de tiempo
+    call o1%setz(3)   ! Es inerte en este paso de tiempo
     depos= .true.
 
     ! Para chequeo Cottrell
@@ -696,7 +683,7 @@ if(o1%pos(3)<=0._dp) then
     !!!!!
     ! Vers. vieja (Langevin 2019)
     !
-    ! call o1%setz('CG') !Le dice que se congele ;)
+    ! call o1%setz(2) !Le dice que se congele ;)
     ! call g%ref%detach(o1)
     ! o1%pos(3)=0._dp 
     ! cycle !Cicla el do más cercano
@@ -780,12 +767,12 @@ do i = 1,g%ref%nat
   do j = 1, 3
     r1=gasdev()
 
-    ranr = skt/sqrt(o1%m)*sdr*r1
+    ranr = skt/sqrt(o1%mass)*sdr*r1
     o1%pos(j) = o1%pos(j) + cc1*o1%vel(j) + cc2*h*o1%acel(j) + ranr
   
     ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                      
     r2=gasdev()
-    ranv(i,j) = skt/sqrt(o1%m)*sdv*(crv1*r1+crv2*r2)
+    ranv(i,j) = skt/sqrt(o1%mass)*sdv*(crv1*r1+crv2*r2)
   end do
 
   call atom_pbc(o1, depos) ! ver de seleccionar forma de CG sobre electrodo
@@ -803,7 +790,7 @@ do i = 1, g%ref%nat
   la=> la%next
   o1=> la%o
   if (o1%sym/='F') cycle
-  call o1%setz('CG')
+  call o1%setz(2)
   call g%ref%detach(o1)
 enddo
 
@@ -826,8 +813,8 @@ do i = 1,g%ref%nat
  
   if(o1%sym=='CG') cycle !Así se ahorra un cálculo
 
-  o1%vel(:) = cc0*o1%vel(:) + (cc1-cc2)*o1%acel(:) + cc2*o1%force(:)/o1%m + ranv(i,:)
-  o1%acel(:)=o1%force(:)/o1%m
+  o1%vel(:) = cc0*o1%vel(:) + (cc1-cc2)*o1%acel(:) + cc2*o1%force(:)/o1%mass + ranv(i,:)
+  o1%acel(:)=o1%force(:)/o1%mass
 
 enddo
 
@@ -856,7 +843,7 @@ subroutine kion(g,temp)
   j=j+1 !Cuenta los iones en mov.
 
   vd=dot_product(o1%vel(:),o1%vel(:))
-  vd=vd*o1%m !vel. al cuadrado ;) *porq. |v|=sqrt vd...
+  vd=vd*o1%mass !vel. al cuadrado ;) *porq. |v|=sqrt vd...
 
 
   vdn=vdac+vd !acumula m*vel**2
@@ -871,6 +858,7 @@ end subroutine kion
 
 ! Fuerzas - potencial LJ
 subroutine fuerza(g,eps,r0) 
+use gems_program_types, only:box  
 class(ngroup)    :: g
 type(atom), pointer        :: o1, o2 
 type(atom_dclist), pointer :: la!, lb 
@@ -884,7 +872,7 @@ do i=1, g%ref%nat !n
   la => la%next
   o1 => la%o
   o1%force(:) = 0._dp
-  o1%energy = 0._dp  
+  o1%epot = 0._dp  
 
 enddo
 ! Calcula fuerzas con las partícs. vecinas
@@ -894,14 +882,13 @@ do ii = 1, g%ref%nat
   o1 => la%o
   i = o1%gid(g)
 
-  k=o1%tipo
+  k=o1%z
 
   do jj = 1, g%nn(i) !sobre lo vecinos
 
     j = g%list(i,jj)
     o2 => g%a(j)%o
-    m=o2%tipo   ! para luego poder elegir los valores de eps y r0
-   
+    m=o2%z   ! para luego poder elegir los valores de eps y r0
     vd(:) = o1%pos(:)-o2%pos(:)
    
     ! PBC en x e y
@@ -940,8 +927,8 @@ do ii = 1, g%ref%nat
     !el pot de LJ+epsilon
     aux=aux+eps(k,m)  
 
-    o1%energy = o1%energy + aux*.5_dp
-    o2%energy = o2%energy + aux*.5_dp
+    o1%epot = o1%epot + aux*.5_dp
+    o2%epot = o2%epot + aux*.5_dp
 
   enddo
 enddo
@@ -988,7 +975,7 @@ do ii = 1,list%ref%nat
 
     ne=ran(idum) ! nro aleatorio para decidir si congelar o no.
     if(ne<prob) then
-       call o2%setz('F') !call set_sym(o2,'F')
+       call o2%setz(3)
 
        ! Terminac. brusca del programa si la dendrita toca el z0
        if (o2%pos(3)>z0) stop 
@@ -1015,8 +1002,9 @@ do i = 1, list%b%nat
   la=> la%next
   o1=> la%o
   if (o1%sym/='F') cycle
-  call o1%setz('CG')
-  call list%addref(o1)
+  call o1%setz(2)
+  call list%ref%attach(o1)
+  call list%attach(o1)
 enddo
 
 ! ESTO ES DE LA RUTINA VIEJA - REVISAR POR LAS DUDAS ANTES DE TIRAR
@@ -1049,7 +1037,7 @@ end subroutine knock
 !   o1 => la%o ! o1 es el único que puede ser CG
 ! 
 !   i = o1%gid(list)
-!   k= o1%tipo
+!   k= o1%z
 !   tp = o1%id(ii)
 ! 
 !   do jj = 1, list%nn(i)  ! sobre los vecinos
@@ -1057,7 +1045,7 @@ end subroutine knock
 !     j = list%list(i,jj)
 !     o2 => list%a(j)%o
 ! 
-!     m = o2%tipo
+!     m = o2%z
 !     ts = o2%id(jj)
 ! 
 !     vd(:) = o1%pos(:)-o2%pos(:)

@@ -34,50 +34,68 @@ character(linewidth)     :: msn=''
 ! timer variables
 real(dp)       :: vclock,sclock
 integer,public :: sclock_rate, sclock_max,sclock_t1,sclock_t2
+ 
+! Error message and error flag 
+character(:),allocatable    :: errm
+logical,public              :: errf
 
-! TODO Error handling. Build buffer using a linked list of characters like a FIFO pile. In
-! this way, errors or messages that a subroutine attempt to write might be
-! handle from outside this subrroutine, choosing to print it or drop it,
-! depending if an error or warning has been found.
-
+! Silent switch makes errors or messages to be supressed. When silent is on,
+! errors will not halt the execution of the program. This provide a simple way to handle
+! errors. Only first message will be save in errm variable.
+! TODO Buffer messages in FIFO pile.
 logical        :: silent=.false.
 
-! True right after a wwan/wstd occurs, false if not.
+! True right after a message is set, false if not.
+! TODO: switch stats to warm and stdm
 logical,public :: stats
 
-! True after a wwan occurs. Manually set to .false. is required.
+! True after a wstd/wwan occurs. Manually set to .false. is required.
 ! This is usefull for group a block of wwan calls.
-logical,public :: wstats
+! TODO: switch wstats and sstats to warm and stdm
+logical,public :: wstats, sstats
 
 contains
+     
+subroutine werr(message,logic)
+! Test logic, report error and halt the program
+logical,intent(in)           :: logic
+character(*),intent(in)      :: message
 
-subroutine werr(message,logica)
-logical,intent(in),optional      :: logica
-character(*),intent(in),optional :: message
+errf=.false.
+if(.not.logic) return
 
-if(present(logica)) then
-  if (.not.logica) return
-endif
+errf=.true.
+errm='#-ERR-> '//message
+           
+if(silent) return
 
-write(logunit,'(a)',advance='no') '#-ERR-> '
-write(error_unit,'(a)',advance='no') '#-ERR-> '
-if (present(message)) then
-  write(logunit,'(a)') trim(message)
-  write(error_unit,'(a)') trim(message)
-endif
-stop
+write(unit=error_unit, fmt='(a)') errm
+write(logunit,'(a)') errm
 
+! TODO:
+! integer, parameter :: ALLOCATION_ERR = 1, &
+!                       FILE_OPEN_ERR = 2, &
+!                       CMD_LINE_NR_ARGS_ERR = 3, &
+!                       CMD_LINE_ARG_VALUE_ERR = 4, &
+!                       FILE_VALUE_ERR = 5
+! stop ALLOCATION_ERR
+stop 1
+
+! TODO:
+! Using compile macros 'at __FILE__ __LINE__'
+ 
 endsubroutine werr
 
-subroutine wstd(message,logica)
-logical,intent(in),optional      :: logica
+subroutine wstd(message,logic)
+logical,intent(in),optional      :: logic
 character(*),intent(in),optional :: message
 
 stats=.false.
-if(present(logica)) then
-  if (.not.logica) return
+if(present(logic)) then
+  if (.not.logic) return
 endif
 stats=.true.
+sstats=.true.
 
 if(silent) return
 
@@ -88,13 +106,13 @@ call flush(logunit)
 
 endsubroutine wstd
 
-subroutine wwan(message,logica)
-logical,intent(in),optional      :: logica
+subroutine wwan(message,logic)
+logical,intent(in),optional      :: logic
 character(*),intent(in),optional :: message
 
 stats=.false.
-if(present(logica)) then
-  if (.not.logica) return
+if(present(logic)) then
+  if (.not.logic) return
 endif
 stats=.true.
 wstats=.true.
@@ -109,15 +127,15 @@ call flush(logunit)
 
 endsubroutine wwan
 
-subroutine wlog(flag,message,logica)
-logical,intent(in),optional      :: logica
+subroutine wlog(flag,message,logic)
+logical,intent(in),optional      :: logic
 character(*),intent(in),optional :: message
 character(*)                     :: flag
 
 if(silent) return
 
-if(present(logica)) then
-  if (.not.logica) return
+if(present(logic)) then
+  if (.not.logic) return
 endif
 
 write(logunit,'(a)',advance='no') '# '//flag//' '
