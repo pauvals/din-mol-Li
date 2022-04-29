@@ -35,7 +35,7 @@ program din_mol_Li
   real(dp)            :: t=0.0_dp   ! tiempo en ps
 
   ! Modelo (?) 
-  logical             :: integrador, reserva    ! algoritmo y estilo de reservorio usados 
+  logical             :: integrador, s_piston=.true.,s_chunk=.false.    ! algoritmo y estilo de reservorio usados 
 
   !Observables
   real(dp)            :: temp,rho,rho0
@@ -97,10 +97,9 @@ program din_mol_Li
   ! Init lista para choques de esferas duras
   call hs%init()
   call hs%setrc(3.2_dp) ! Maximo radio de corte
-  call config()
 
-  ! Grupo chunk
-  if (.not.reserva) call chunk%init()
+  ! Configuro el reservorio
+  call config()
 
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
@@ -123,10 +122,6 @@ program din_mol_Li
   call calc_rho(rho)
   rho0=rho
   
-
-  ! Leer chunk de atoms:
-  if (.not.reserva) call config_chunk()
-
 
   ! Abro archivos de salida
   open(11,File='Li.xyz')
@@ -163,7 +158,7 @@ program din_mol_Li
     call calc_rho(rho)
 
     ! Agrega bloques de partículas
-    if (.not.reserva) call bloques(sys, chunk, nx, rho)
+    if (s_chunk) call bloques(sys, chunk, nx, rho)
 
     ! Salida
     if (mod(i,nwr)==0) then
@@ -177,7 +172,7 @@ program din_mol_Li
     call timer_dump(i,nup=nupd_vlist)
   
     ! Para usar reservorio-pistón:
-    if (reserva) call maxz(zmax)
+    if (s_piston) call maxz(zmax)
 
     t=t+h
    
@@ -218,9 +213,27 @@ program din_mol_Li
 contains
 
 subroutine config()
+  use gems_errors, only: werr
+  character(100)  :: a
   open(15,File='movedor.ini') ! by Nohe :)
   read(15,*) integrador 
-  read(15,*) reserva
+
+  ! Leo el tipo de reservorio
+  read(15,*) a
+  select case(trim(a))
+  case('piston')
+    s_piston=.true.
+    s_chunk=.false.
+  case('chunks')
+    s_piston=.false.
+    s_chunk=.true.
+    call chunk%init()
+    call config_chunk()
+  case('gcmc')
+  case default
+    call werr('Unknown reservoir type',.true.)
+  end select
+
   close(15)
 end subroutine config 
 
@@ -246,11 +259,10 @@ type(atom_dclist), pointer :: la
 character(10)     :: sym
 
 ! Tamaños iniciales de "reservorio"
-if (reserva) then
+if (s_piston) then
   ! Al usar pistón
   zmax= 200._dp
-
-else
+else if(s_chunk) then
   ! Al usar chunk con sensor
   dist= dist + hs%rcut
   z1 = z0 + dist
@@ -420,16 +432,16 @@ subroutine calc_rho(rho) !Densidad/concentrac.
 
   do i=1, sys%nat ! Para contar las partícs. por encima de z0
    pa=>sys%a(i)%o
-   if (reserva) then 
+   if(s_piston) then 
      if (pa%pos(3)>z0 .and. pa%pos(3)<zmax) g= g+1 ! piston
-   else
+   else if(s_chunk) then
      if (pa%pos(3)>z0 .and. pa%pos(3)<z1) g= g+1   ! sensor+chunk
    endif
   enddo
 
-  if (reserva) then
+  if(s_piston) then 
     vol=box(1)*box(2)*(zmax-z0) ! piston
-  else
+  else if(s_chunk) then
     vol=box(1)*box(2)*(z1-z0)   ! sensor+chunk
   end if
   rho= g/vol
