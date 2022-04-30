@@ -1175,12 +1175,13 @@ g%a(i)%o=>null()
 ! Detach atom
 call group_detach_atom(g,a)
 
-! Update index if null count is above a fraction of the array size.  
-if ((g%amax-g%nat)>size(g%a)*g%aupd) then
-  call igroup_update_index(g)
-else
-  g%update=.false.
-endif
+! FIXME: Seg fault with this  
+! ! Update index if null count is above a fraction of the array size.  
+! if ((g%amax-g%nat)>size(g%a)*g%aupd) then
+!   call igroup_update_index(g)
+! else
+!   g%update=.false.
+! endif
 
 end subroutine igroup_detach_atom
      
@@ -1201,7 +1202,12 @@ do j=1,g%amax
  
   ! Skip detached atoms
   if(.not.associated(a)) cycle
-          
+   
+  ! Skip atoms in limbo
+  if(g%b_limbo) then
+    if(associated(a,target=g%limbo)) cycle
+  endif
+                          
   ! Skip if update is not needed
   i=i+1
   if(i==j) cycle
@@ -1224,7 +1230,7 @@ g%update=.true.
 ! Write into log file 
 ! TODO: Build a warning if several calls are made to this subroutine
 ! and set up a CLI to control/deactivate `aupd`
-call wlog('Index of group '//.ich.g%id//' updated')
+call wlog('GRP','Index of group '//.ich.g%id//' updated')
 
 end subroutine igroup_update_index
 

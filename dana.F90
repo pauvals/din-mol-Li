@@ -35,7 +35,7 @@ program din_mol_Li
   real(dp)            :: t=0.0_dp   ! tiempo en ps
 
   ! Modelo (?) 
-  logical             :: integrador, s_piston=.true.,s_chunk=.false.    ! algoritmo y estilo de reservorio usados 
+  logical             :: integrador, s_piston=.false.,s_chunk=.false.    ! algoritmo y estilo de reservorio usados 
 
   !Observables
   real(dp)            :: temp,rho,rho0
@@ -53,7 +53,14 @@ program din_mol_Li
   real(dp)            :: sdr,sdv, sdr_sei,sdv_sei, sdr_sc,sdv_sc, skt
   real(dp)            :: crv1,crv2, crv1_sei,crv2_sei, crv1_sc,crv2_sc
   real(dp),allocatable:: ranv(:,:)
-
+   
+  ! Esto es para GCMC
+  logical             :: s_gcmc=.false.
+  type(group)         :: gcmc
+  real(dp)            :: gcmc_pad, act
+  integer             :: nadj
+  type(atom_dclist), pointer :: la 
+  
   ! Grupos varios
   type(group)         :: chunk
 
@@ -93,7 +100,7 @@ program din_mol_Li
   call sys%init()
 
   nb_dcut=10._dp        ! The shell length for verlet update criteria
- 
+               
   ! Init lista para choques de esferas duras
   call hs%init()
   call hs%setrc(3.2_dp) ! Maximo radio de corte
@@ -112,6 +119,16 @@ program din_mol_Li
   ! Inicializa tamaño en z de caja simulac., y lee posic. inic.
   ! de partículas 
   call config_inic()
+
+  ! Add to GCMC
+  if(s_gcmc) then
+    call gcmc%init()
+    la=>sys%alist
+    do j=1,sys%nat
+     la=>la%next 
+     if(la%o%z==1) call gcmc%attach(la%o)
+    enddo
+  endif
 
   !Search neighbors
   call test_update()
@@ -134,7 +151,6 @@ program din_mol_Li
   call timer_start()
 
   do i=1,nst
-
     ! Da un paso #wii
 
     if (integrador) then
@@ -154,6 +170,8 @@ program din_mol_Li
     call test_update()
     ! call update()
     
+    if(s_gcmc) call gcmc_run(gcmc)
+      
     ! Calcula cant. de partículas en reservorio o sensor
     call calc_rho(rho)
 
@@ -222,14 +240,14 @@ subroutine config()
   read(15,*) a
   select case(trim(a))
   case('piston')
-    s_piston=.true.
     s_chunk=.false.
   case('chunks')
-    s_piston=.false.
     s_chunk=.true.
     call chunk%init()
     call config_chunk()
   case('gcmc')
+    s_gcmc=.true.
+    read(15,*) gcmc_pad, act, nadj
   case default
     call werr('Unknown reservoir type',.true.)
   end select
@@ -259,10 +277,8 @@ type(atom_dclist), pointer :: la
 character(10)     :: sym
 
 ! Tamaños iniciales de "reservorio"
-if (s_piston) then
-  ! Al usar pistón
-  zmax= 200._dp
-else if(s_chunk) then
+zmax= 200._dp
+if(s_chunk) then
   ! Al usar chunk con sensor
   dist= dist + hs%rcut
   z1 = z0 + dist
@@ -389,6 +405,7 @@ end subroutine config_chunk
 
 subroutine salida()  ! Escribe los datos calc. :P
   integer  :: j !Siempre hay que definirlos =O siempre privados
+  type(atom_dclist), pointer :: la 
   real(dp) :: energia
  
   energia= 0._dp
@@ -396,8 +413,10 @@ subroutine salida()  ! Escribe los datos calc. :P
   ! Coords. de partíc.
   write(11,*) sys%nat ! n
   write(11,*) "info:",zmax,sys%nat
-  do j =1, sys%nat
-   pa=>sys%a(j)%o
+  la=>sys%alist
+  do j=1,sys%nat
+   la=>la%next 
+   pa=>la%o
    write(11,*) pa%sym,pa%pos(:),pa%z
 
    ! Para el otro archivo de salida
@@ -601,7 +620,12 @@ do jj = 1, g%nn(i)  ! sobre los vecinos
 
   j = g%list(i,jj)
   o2 => g%a(j)%o
-
+             
+  ! Skip atoms in limbo
+  if(g%b_limbo) then
+    if(associated(o2,target=g%limbo)) cycle
+  endif
+             
   vd(:) = vdistance(o1,o2,.true.)
   dr = dot_product(vd,vd)
 
@@ -900,6 +924,12 @@ do ii = 1, g%ref%nat
 
     j = g%list(i,jj)
     o2 => g%a(j)%o
+
+    ! Skip atoms in limbo
+    if(g%b_limbo) then
+      if(associated(o2,target=g%limbo)) cycle
+    endif
+         
     m=o2%z   ! para luego poder elegir los valores de eps y r0
     vd(:) = o1%pos(:)-o2%pos(:)
    
@@ -1033,7 +1063,135 @@ enddo
 
 ! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
 end subroutine knock
+ 
+subroutine gcmc_run(g)
+use gems_program_types, only: box, distance 
+use gems_constants, only: kB_ui
+class(group)               :: g
+real(dp)                   :: z1,z2
+real(dp)                   :: r(3), vd(3), dr, v, rc, temp, beta
+type(atom_dclist), pointer :: la
+type(atom),pointer         :: o, ref
+integer                    :: i,j,n,m
+ 
+z1=zmax-gcmc_pad
+z2=zmax
+rc=hs%rcut
+           
+! Compute volume
+v=box(1)*box(2)*(z2-z1)
+     
+! Count particles in the control volume
+n=0
+la=>g%alist
+do j=1,g%nat
+  la=>la%next
+  if(la%o%pos(3)<z1.or.la%o%pos(3)>z2) cycle
+  n=n+1
+enddo
+    
+! Point to an atom that will work as template
+! in order to add new atoms into groups.
+       
+! Attempted adjustments 
+adj: do i=1,nadj
 
+  ref => g%alist%next%o
+  beta = sqrt(kB_ui*Tsist/ref%mass)
+  call werr('No more particles',.not.associated(ref))
+
+  ! Creation attempt
+ if (ran(idum)<0.5) then
+       
+    ! Random coordinates
+    r(1)=ran(idum)*box(1)
+    r(2)=ran(idum)*box(2)
+    r(3)=ran(idum)*(z2-z1)+z1
+
+    ! Check overlap
+    la=>g%alist
+    do j=1,g%nat
+      la=>la%next
+      o => la%o
+
+      ! ! Skip particles outside the control volume.
+      ! FIXME: consider PBC
+      ! if(o%pos(3)<z1-rc) cycle
+      ! if(o%pos(3)>z2+rc) cycle
+
+      ! Skip if overlapping
+      vd(:) = distance(o%pos,r,o%pbc)
+      dr = dot_product(vd,vd)
+      if(dr<rc*rc) cycle adj
+
+    enddo
+
+    ! Metropolis acceptance
+    if(act*v/(n+1)>ran(idum)) then
+   
+      ! Add particle
+      n=n+1
+
+      ! Initialize particle from template.
+      allocate(o)
+      call o%init()
+      call atom_asign(o,ref)
+      o%pos(:)=r(:)
+       
+      ! Give a velocity from maxwell-boltzman distribution
+      do j = 1,3
+        la%o%vel(j) = beta*gasdev()
+      enddo
+
+      ! Add to the same groups of the template.
+      do j=1,ref%ngr
+        call ref%gr(j)%o%attach(o)
+      enddo
+          
+      ! Free pointer
+      o=>null()
+           
+    endif
+
+  ! Destruction attempt
+  else 
+            
+    ! Metropolis acceptance
+    if(n/(v*act)>ran(idum)) then
+                  
+      ! Choose a particle
+      m=floor(ran(idum)*n)+1
+      if(m>n) m=n
+
+      la=>g%alist
+      do j=1,g%nat
+        la=>la%next
+        o => la%o
+
+        ! Skip particles outside the control volume.
+        if(o%pos(3)<z1) cycle
+        if(o%pos(3)>z2) cycle
+
+        m=m-1  
+        if(m==0) exit
+      enddo
+      call werr('Chosen particle does not exists',m>0)
+              
+      ! Remove particle
+      n=n-1
+      call o%dest()
+      deallocate(o)
+         
+    endif
+           
+  endif 
+   
+enddo adj
+      
+           
+end subroutine
+
+ 
 ! subroutine hspheres(list) ! Rebote brusco en solucion
 ! type(ngroup)              :: list
 ! real(dp)                  :: ne,vd(3),dr
