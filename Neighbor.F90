@@ -181,31 +181,42 @@ n=g%nat
 call g%igroup_attach_atom(a)
 if(n==g%nat) return
 
-! Continue reallocations
-! TODO: Implement a "preserve" boolean?
-! TODO: Skip this if not allocated head?
 n=size(g%a)
-if(size(g%nn)<n) then
-  allocate(t_nn(n))
-  t_nn(:size(g%nn)) = g%nn(:)
-  call move_alloc(to=g%nn,from=t_nn)
-
-  allocate(t_list(n,g%mnb))
-  t_list(:size(g%list,1),:) = g%list(:,:)
-  call move_alloc(to=g%list,from=t_list)
-endif   
-
-! Sort atom into neighbor list. 
-! NOTE: This will only work if atom is already attached to `b` or `ref`
-! before enter to this procedure. For example:
-!   call g%ref%attach(a) 
-!   call g%b%attach(a)  
-!   call g%attach(a)  ! at last
 if(g%listed) then
+
+  ! Continue reallocations
+  if(size(g%nn)<n) then
+    allocate(t_nn(n))
+    t_nn(:size(g%nn)) = g%nn(:)
+    call move_alloc(to=g%nn,from=t_nn)
+
+    allocate(t_list(n,g%mnb))
+    t_list(:size(g%list,1),:) = g%list(:,:)
+    call move_alloc(to=g%list,from=t_list)
+  endif   
+
+  ! Sort atom into neighbor list. 
+  ! NOTE: This will only work if atom is already attached to `b` or `ref`
+  ! before enter to this procedure. For example:
+  !   call g%ref%attach(a) 
+  !   call g%b%attach(a)  
+  !   call g%attach(a)  ! at last
   i=a%gid(g)
   ! FIXME, g%listed puede ser true
   ! pero b%tesselated false...
   call ngroup_sort_atom(g,i)
+
+else  
+ 
+  ! Continue reallocations
+  n=size(g%a)
+  if(size(g%nn)<n) then
+    deallocate(g%nn)
+    deallocate(g%list)
+    allocate(g%nn(n))
+    allocate(g%list(n,g%mnb))
+  endif   
+ 
 endif
         
 end subroutine ngroup_attach_atom

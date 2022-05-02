@@ -24,12 +24,13 @@ fi
  
 
 if [[ "$tests" == *"gcmc"* ]]; then
-	echo -e "Corriendo test de $1. Data en \e[1mbrown/data_$1\e[0m =)"
+  x=${1%/}
+	echo -e "Corriendo test de $x. Data en \e[1mbrown/data_$x\e[0m =)"
 	cd gcmc
-	rm -f Li.xyz data_$1
+	rm -f Li.xyz data_$x
 
-	time ( ../../dana > data_$1 )
-	diff <(tail -n 3012 Li.xyz) ref.xyz > /dev/null && echo -e	"\e[1;103mOk_$1\e[0m" || echo -e "\e[1;101mFAIL_$1\e[0m"
+	time ( ../../dana > data_$x )
+	diff <(tail -n 1400 Li.xyz) ref.xyz > /dev/null && echo -e	"\e[1;103mOk_$x\e[0m" || echo -e "\e[1;101mFAIL_$x\e[0m"
 	cd ..
 fi
  

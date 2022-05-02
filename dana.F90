@@ -140,6 +140,10 @@ program din_mol_Li
   rho0=rho
   
 
+  ! Leer chunk de atoms:
+  if(s_chunk)  call config_chunk()
+
+
   ! Abro archivos de salida
   open(11,File='Li.xyz')
   open(12,File='E.dat')
@@ -151,6 +155,7 @@ program din_mol_Li
   call timer_start()
 
   do i=1,nst
+
     ! Da un paso #wii
 
     if (integrador) then
@@ -240,11 +245,10 @@ subroutine config()
   read(15,*) a
   select case(trim(a))
   case('piston')
-    s_chunk=.false.
+    s_piston=.true.
   case('chunks')
     s_chunk=.true.
     call chunk%init()
-    call config_chunk()
   case('gcmc')
     s_gcmc=.true.
     read(15,*) gcmc_pad, act, nadj
@@ -433,6 +437,7 @@ subroutine salida()  ! Escribe los datos calc. :P
   flush(14)
   flush(13)
   flush(12)
+  flush(11)
 
 end subroutine salida
 
@@ -483,6 +488,9 @@ use gems_program_types, only: tbox, box_setvars
   z0 = z0 + dist
   z1 = z1 + dist
   zmax = zmax + dist
+
+  ! Deactivate neighboor list to speed up multiple addition
+  hs%listed=.false.
 
   ! copiamos los atomos que estaban en chunk a sys, con allocate
   la=>g2%alist ! apunta al chunk
@@ -603,6 +611,7 @@ do i = 1, g%ref%nat
   if (o1%sym/='F') cycle
   call o1%setz(2) ! CG
   call g%ref%detach(o1)
+  if(s_gcmc) call gcmc%detach(o1)
 enddo
                
 end subroutine cbrownian_hs
@@ -828,6 +837,7 @@ do i = 1, g%ref%nat
   if (o1%sym/='F') cycle
   call o1%setz(2)
   call g%ref%detach(o1)
+  if(s_gcmc) call gcmc%detach(o1)
 enddo
 
 end subroutine ermak_a
