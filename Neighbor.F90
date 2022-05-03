@@ -281,7 +281,7 @@ if(a%gid(g%b)>0) then
   ! Cut radious
   rcut=(g%rcut+nb_dcut)
   rcut=rcut*rcut
- 
+
   la => g%ref%alist
   do jj = 1,g%ref%nat
     la => la%next

@@ -1,6 +1,6 @@
 program din_mol_Li
-  use gems_groups
-  use gems_neighbor
+  use gems_groups, only: group, atom, atom_dclist, sys, gindex
+  use gems_neighbor, only: test_update, ngroup, ngindex, nn_vlist, nupd_vlist
   use gems_elements, only: set_z, elements_init
   use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_t2, wstd, sclock_max, sclock_rate,logunit
   use gems_constants, only: time1, dp, sp
@@ -98,9 +98,11 @@ program din_mol_Li
   call gindex%init()
   call ngindex%init()
   call sys%init()
-
-  nb_dcut=10._dp        ! The shell length for verlet update criteria
-               
+ 
+  ! Leer semilla, probabilidad, nro. pasos
+  ! y otros valores iniciales
+  call entrada()
+        
   ! Init lista para choques de esferas duras
   call hs%init()
   call hs%setrc(3.2_dp) ! Maximo radio de corte
@@ -111,10 +113,6 @@ program din_mol_Li
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
   close(25)
-
-  ! Leer semilla, probabilidad, nro. pasos
-  ! y otros valores iniciales
-  call entrada()
 
   ! Inicializa tamaño en z de caja simulac., y lee posic. inic.
   ! de partículas 
@@ -161,6 +159,7 @@ program din_mol_Li
     if (integrador) then
       ! Para trabajar con din. Langevin
       call ermak_a(hs,ranv)
+      ! FIXME: test_update must be always before force calculation
       ! TODO: ver de sacar ya knock
       ! Ve si congela o rebota
       ! call knock(hs)
@@ -173,7 +172,6 @@ program din_mol_Li
     endif
  
     call test_update()
-    ! call update()
     
     if(s_gcmc) call gcmc_run(gcmc)
       
@@ -260,6 +258,7 @@ subroutine config()
 end subroutine config 
 
 subroutine entrada()
+  use gems_neighbor, only: nb_dcut  
   open(15,File='entrada.ini')
   read(15,*) idum
   read(15,*) prob
@@ -270,6 +269,7 @@ subroutine entrada()
   read(15,*) z0 
   read(15,*) dif_sc 
   read(15,*) dif_sei 
+  read(15,*) nb_dcut
   close(15)
 end subroutine entrada
 
@@ -316,14 +316,16 @@ do i=1,n
   ! Agrega atom al sistema (sys)
   call sys%attach(pa)
 
-  ! Agrego atomos a los grupos 
-  call hs%attach(pa)
+  ! Agrego atomos a los grupos
+  ! NOTA: hs%attach tiene que estar al final
+  ! para que ande la lista de vecinos
   if (pa%sym=='CG') then
     call hs%b%attach(pa)
   else
     call hs%ref%attach(pa)
     call hs%b%attach(pa)
   endif
+  call hs%attach(pa)
 
   ! Set pbc
   pa%pbc(:)=.true.
@@ -422,6 +424,7 @@ subroutine salida()  ! Escribe los datos calc. :P
    la=>la%next 
    pa=>la%o
    write(11,*) pa%sym,pa%pos(:),pa%z
+   ! write(11,*) pa%sym,pa%pos(:),pa%gid(sys)
 
    ! Para el otro archivo de salida
    energia= energia + pa%epot 
@@ -442,6 +445,7 @@ subroutine salida()  ! Escribe los datos calc. :P
 end subroutine salida
 
 subroutine calc_rho(rho) !Densidad/concentrac.
+  use gems_program_types, only: box
   ! Calculada para un volumen considerado reservorio
   ! Dos opciones: pistón,
   ! o con sensor: "debajo" está el sistema, y "encima" está 
@@ -473,6 +477,7 @@ end subroutine calc_rho
 
 subroutine bloques(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
 use gems_program_types, only: tbox, box_setvars  
+use gems_groups, only: group, atom, atom_asign, atom_dclist
   class(group)    :: g1, g2
   type(atom_dclist), pointer :: la
   type(atom),pointer    :: o1,o2
@@ -617,6 +622,7 @@ enddo
 end subroutine cbrownian_hs
 
 subroutine atom_hs_choque(o1, g)
+use gems_groups, only: vdistance
 class(atom)     :: o1
 class(atom),pointer :: o2
 class(ngroup)   :: g
@@ -672,6 +678,7 @@ end subroutine atom_hs_choque
 
 ! Para PBC, e intento deposic. sobre electrodo
 subroutine atom_pbc(o1, depos)
+use gems_program_types, only: box
 class(atom) :: o1
 integer     :: j
 real(dp)    :: ne
@@ -989,6 +996,7 @@ end subroutine fuerza
 
 ! Deposic. sobre Li ya depositado, sino, rebote brusco
 subroutine knock(list) 
+use gems_program_types, only: box
 type(ngroup)              :: list
 real(dp)                  :: ne,vd(3),dr
 integer                   :: i,ii,j,jj,l 
@@ -1075,8 +1083,10 @@ enddo
 end subroutine knock
  
 subroutine gcmc_run(g)
+use gems_groups, only: atom_asign
 use gems_program_types, only: box, distance 
 use gems_constants, only: kB_ui
+use gems_errors, only: werr
 class(group)               :: g
 real(dp)                   :: z1,z2
 real(dp)                   :: r(3), vd(3), dr, v, rc, temp, beta
@@ -1112,12 +1122,15 @@ adj: do i=1,nadj
 
   ! Creation attempt
  if (ran(idum)<0.5) then
+              
+    ! Metropolis acceptance
+    if(act*v/(n+1)<ran(idum)) cycle
        
     ! Random coordinates
     r(1)=ran(idum)*box(1)
     r(2)=ran(idum)*box(2)
     r(3)=ran(idum)*(z2-z1)+z1
-
+                   
     ! Check overlap
     la=>g%alist
     do j=1,g%nat
@@ -1136,64 +1149,58 @@ adj: do i=1,nadj
 
     enddo
 
-    ! Metropolis acceptance
-    if(act*v/(n+1)>ran(idum)) then
-   
-      ! Add particle
-      n=n+1
+    ! Add particle
+    n=n+1
 
-      ! Initialize particle from template.
-      allocate(o)
-      call o%init()
-      call atom_asign(o,ref)
-      o%pos(:)=r(:)
-       
-      ! Give a velocity from maxwell-boltzman distribution
-      do j = 1,3
-        la%o%vel(j) = beta*gasdev()
-      enddo
+    ! Initialize particle from template.
+    allocate(o)
+    call o%init()
+    call atom_asign(o,ref)
+    o%pos(:)=r(:)
+    o%pos_old(:)=r(:)
+     
+    ! Give a velocity from maxwell-boltzman distribution
+    do j = 1,3
+      la%o%vel(j) = beta*gasdev()
+    enddo
 
-      ! Add to the same groups of the template.
-      do j=1,ref%ngr
-        call ref%gr(j)%o%attach(o)
-      enddo
-          
-      ! Free pointer
-      o=>null()
-           
-    endif
-
+    ! Add to the same groups of the template.
+    do j=1,ref%ngr
+      call ref%gr(j)%o%attach(o)
+    enddo
+        
+    ! Free pointer
+    o=>null()
+         
   ! Destruction attempt
   else 
             
     ! Metropolis acceptance
-    if(n/(v*act)>ran(idum)) then
-                  
-      ! Choose a particle
-      m=floor(ran(idum)*n)+1
-      if(m>n) m=n
+    if(n/(v*act)<ran(idum)) cycle
+                
+    ! Choose a particle
+    m=floor(ran(idum)*n)+1
+    if(m>n) m=n
 
-      la=>g%alist
-      do j=1,g%nat
-        la=>la%next
-        o => la%o
+    la=>g%alist
+    do j=1,g%nat
+      la=>la%next
+      o => la%o
 
-        ! Skip particles outside the control volume.
-        if(o%pos(3)<z1) cycle
-        if(o%pos(3)>z2) cycle
+      ! Skip particles outside the control volume.
+      if(o%pos(3)<z1) cycle
+      if(o%pos(3)>z2) cycle
 
-        m=m-1  
-        if(m==0) exit
-      enddo
-      call werr('Chosen particle does not exists',m>0)
-              
-      ! Remove particle
-      n=n-1
-      call o%dest()
-      deallocate(o)
-         
-    endif
-           
+      m=m-1  
+      if(m==0) exit
+    enddo
+    call werr('Chosen particle does not exists',m>0)
+            
+    ! Remove particle
+    n=n-1
+    call o%dest()
+    deallocate(o)
+       
   endif 
    
 enddo adj
