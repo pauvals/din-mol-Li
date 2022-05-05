@@ -48,6 +48,7 @@ private  _Put
 private  _Delete   
 private  _Destroy  
 private  _Increase
+private  _Assign
 
 #undef _NODE
 #undef _TYPE

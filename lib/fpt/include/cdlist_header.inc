@@ -1,14 +1,13 @@
 #include "prep.inc"
 
-#define _Constructor      _PASTE(_NODE,_constructor)
 #define _Alloc      _PASTE(_NODE,_alloc)
 #define _Source     _PASTE(_NODE,_source)
 #define _Point      _PASTE(_NODE,_point)
 #define _Destroy    _PASTE(_NODE,_destroy)
 
+#define _Constructor      _PASTE(_NODE,_constructor)
 #define _AddAfter   _PASTE(_NODE,_add_after)
 #define _AddBefore  _PASTE(_NODE,_add_before)
-#define _Append     _PASTE(_NODE,_append)
 #define _DestroyAll _PASTE(_NODE,_destroy_all)
 #define _Deattach   _PASTE(_NODE,_deattach)
 

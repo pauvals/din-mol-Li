@@ -12,6 +12,7 @@ include_HEADERS = $(top_srcdir)/include/arrayofptrs_header.inc  \
 		  $(top_srcdir)/include/list_body.inc	             \
 		  $(top_srcdir)/include/list_header.inc	     \
 		  $(top_srcdir)/include/prep.inc		     \
+		  $(top_srcdir)/include/object.inc		     \
 		  $(top_srcdir)/include/vector_body.inc	     \
 		  $(top_srcdir)/include/vector_header.inc
 
