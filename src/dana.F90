@@ -11,6 +11,7 @@ program din_mol_Li
   integer               :: n, nx, nchunk        ! Nros de particulas
   real(dp), parameter   :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
   real(dp)              :: z0, z1, zmax         ! Para ajuste del reservorio
+  real(dp)              :: xi, yi               ! Tamaño en x e y de caja sim.
   real(dp), parameter   :: gama=1._dp           ! Para fricción (no usado)
   real(dp)              :: dif, dif_sei, dif_sc ! Difusion (USADO)
   real(dp), parameter   :: Tsist=300._dp        ! Temp. del sist., 300 K
@@ -268,6 +269,8 @@ subroutine entrada()
   read(15,*) h 
   read(15,*) nst
   read(15,*) nwr
+  read(15,*) xi 
+  read(15,*) yi
   read(15,*) dist 
   read(15,*) z0 
   read(15,*) zmax 
@@ -281,7 +284,7 @@ subroutine pos_inic()
 integer             :: n 
 real(dp),allocatable:: r(:,:) !posic.
 real(dp)            :: Mol, dif(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
-real(dp),parameter  :: box=100._dp, r0=3.2_dp, mLi= 6.94_dp
+real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
 integer             :: i,j,l,k,idum
 
 idum=1231
@@ -291,7 +294,7 @@ idum=1231
 ! Molaridad usada = 1 M
 Mol = 1._dp 
 alto = zmax - o
-n = Mol * box * box * alto * 6.022e-4 
+n = Mol * xi * yi * alto * 6.022e-4 
 allocate(r(n,3))
 
 open(12,File='pos_inic.xyz')
@@ -304,10 +307,8 @@ do i=1,n
   ! Recorro los intentos 
   intento: do k=1,10000
     !Posic. de Li
-    do l=1,2
-      r(i,l)=ran(idum)*box
-    enddo
-
+    r(i,1)=ran(idum)*xi
+    r(i,2)=ran(idum)*yi
     r(i,3)=(ran(idum)*alto) + o ! en z 
 
     ! Recorro las particulas ya creadas 
@@ -402,10 +403,10 @@ close(11)
 allocate(ranv(n,3))
 
 ! Set the box
-tbox(:,:)=0._dp
-tbox(1,1)=100._dp
-tbox(2,2)=100._dp
-tbox(3,3)=zmax
+tbox(:,:)= 0._dp
+tbox(1,1)= xi
+tbox(2,2)= yi
+tbox(3,3)= zmax
 call box_setvars()
  
 
