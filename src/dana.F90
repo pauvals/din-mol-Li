@@ -107,6 +107,9 @@ program din_mol_Li
   call hs%init()
   call hs%setrc(3.2_dp) ! Maximo radio de corte
 
+  ! Generar posiciones inic.
+  call pos_inic()
+
   ! Configuro el reservorio
   call config()
 
@@ -267,11 +270,71 @@ subroutine entrada()
   read(15,*) nwr
   read(15,*) dist 
   read(15,*) z0 
+  read(15,*) zmax 
   read(15,*) dif_sc 
   read(15,*) dif_sei 
   read(15,*) nb_dcut
   close(15)
 end subroutine entrada
+
+subroutine pos_inic()
+integer             :: n 
+real(dp),allocatable:: r(:,:) !posic.
+real(dp)            :: Mol, dif(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
+real(dp),parameter  :: box=100._dp, r0=3.2_dp, mLi= 6.94_dp
+integer             :: i,j,l,k,idum
+
+idum=1231
+
+! Cálculo del nro. de partículas
+! n= Molaridad * Volumen(A^3) * 1e-27 L/A^3 * 6.022e23 (Nro Avogadro)
+! Molaridad usada = 1 M
+Mol = 1._dp 
+alto = zmax - o
+n = Mol * box * box * alto * 6.022e-4 
+allocate(r(n,3))
+
+open(12,File='pos_inic.xyz')
+write(12,*) n  !escribe el nro. total de átomos
+write(12,*)
+
+! Recorro todas las particulas a crear
+do i=1,n
+
+  ! Recorro los intentos 
+  intento: do k=1,10000
+    !Posic. de Li
+    do l=1,2
+      r(i,l)=ran(idum)*box
+    enddo
+
+    r(i,3)=(ran(idum)*alto) + o ! en z 
+
+    ! Recorro las particulas ya creadas 
+    do j=1,i-1 
+
+      !Veo distancia Li-Li
+      dif(:)=r(i,:)-r(j,:)
+      dif2=dot_product(dif,dif)
+
+      if (dif2<r0*r0) cycle intento
+
+    enddo
+
+    exit
+  enddo intento
+
+  if(k==10001) then
+      print *, 'Maximo numero de intentos alcanzado'
+      stop
+  endif
+
+write(12,*) 'Li',r(i,:),mLi
+
+enddo
+close(12)
+
+end subroutine pos_inic
 
 ! Leer configuración inicial
 subroutine config_inic()
@@ -281,7 +344,6 @@ type(atom_dclist), pointer :: la
 character(10)     :: sym
 
 ! Tamaños iniciales de "reservorio"
-zmax= 200._dp
 if(s_chunk) then
   ! Al usar chunk con sensor
   dist= dist + hs%rcut
@@ -298,7 +360,7 @@ factor2= rhomedia + cstdev
 ! 0.000577532941264052= STATS_mean
 ! 0.000107543058373559= 4*STATS_stddev
 
-open(11,File='posic_inic.xyz')
+open(11,File='pos_inic.xyz')
 read(11,*) n
 read(11,*)
 
