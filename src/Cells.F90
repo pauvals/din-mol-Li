@@ -101,19 +101,21 @@ if(allocated(g%head)) deallocate(g%head)
 if(allocated(g%next)) deallocate(g%next)
 end subroutine cgroup_destroy
 
-subroutine cgroup_attach_atom(g,a)
+subroutine cgroup_attach_atom(g,a,l_)
 use gems_errors, only: silent,errf
 class(cgroup),target  :: g
 class(atom),target    :: a
-integer               :: n,i
+integer               :: i
 integer,allocatable   :: t_next(:)
 integer               :: aux1(dm)
+integer,intent(out),optional :: l_
+integer                      :: l
 
 ! Attempt to attach
-n=g%nat
-call g%igroup_attach_atom(a)
-if(n==g%nat) return
-
+call g%igroup_attach_atom(a,l)
+if(present(l_)) l_=l
+if(l==0) return
+ 
 ! Continue reallocations
 ! TODO: Implement a "preserve" boolean?
 ! TODO: Skip this if not allocated head?
@@ -245,7 +247,7 @@ g%cellaux(1) = 1
 g%cellaux(2) = g%ncells(1)
 g%cellaux(3) = g%ncells(1)*g%ncells(2)
 
-if(.not.g%tessellated) then
+if(g%b_out) then
   call wlog('NHB','Using Linked Cells.')
   call wlog('NHB'); write(logunit,fmt="(a,f10.5)") ' cut radious: ', g%rcut
   call wlog('NHB'); write(logunit,fmt="(a,"//cdm//"(f10.5,2x))") ' cell size: ', g%cell(1:dm)
@@ -269,7 +271,6 @@ do i = 1,g%amax
   if(.not.associated(g%a(i)%o)) cycle
   call cgroup_sort_atom(g,i)
 enddo
-! print *, g%head(:,:,:)
 
 end subroutine cgroup_sort
 

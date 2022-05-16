@@ -1155,6 +1155,7 @@ real(dp)                   :: z1,z2
 real(dp)                   :: r(3), vd(3), dr, v, rc, temp, beta
 type(atom_dclist), pointer :: la
 type(atom),pointer         :: o, ref
+class(group),pointer       :: gp
 integer                    :: i,j,n,m
  
 z1=zmax-gcmc_pad
@@ -1229,7 +1230,8 @@ adj: do i=1,nadj
 
     ! Add to the same groups of the template.
     do j=1,ref%ngr
-      call ref%gr(j)%o%attach(o)
+      gp => ref%gro(j)
+      call gp%attach(o)
     enddo
         
     ! Free pointer

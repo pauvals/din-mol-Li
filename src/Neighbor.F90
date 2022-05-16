@@ -127,7 +127,12 @@ contains
 
 subroutine ngroup_construct(g)
 class (ngroup),target             :: g
-
+ 
+! Init internal groups
+call g%ref%init()
+call g%b%init()
+g%b%ghost=.true.
+  
 ! Initialize
 call g%igroup_construct()
 
@@ -138,11 +143,6 @@ g%ghost=.true.
 ! Index the group
 call ngindex%append()
 ngindex%o(ngindex%size)%o=>g
-
-! Init internal groups
-call g%ref%init()
-call g%b%init()
-g%b%ghost=.true.
 
 ! Allocate
 allocate(g%nn(g%pad))
@@ -170,17 +170,19 @@ deallocate(g%list)
 
 end subroutine ngroup_destroy
 
-subroutine ngroup_attach_atom(g,a)
+subroutine ngroup_attach_atom(g,a,l_)
 class(ngroup),target   :: g
 class(atom),target     :: a
 integer, allocatable   :: t_nn(:), t_list(:,:)
 integer                :: n,i
+integer,intent(out),optional :: l_
+integer                      :: l
 
 ! Attempt to attach
-n=g%nat
-call g%igroup_attach_atom(a)
-if(n==g%nat) return
-
+call g%igroup_attach_atom(a,l)
+if(present(l_)) l_=l
+if(l==0) return
+ 
 n=size(g%a)
 if(g%listed) then
 
@@ -201,7 +203,7 @@ if(g%listed) then
   !   call g%ref%attach(a) 
   !   call g%b%attach(a)  
   !   call g%attach(a)  ! at last
-  i=a%gid(g)
+  i=a%id(l)
   ! FIXME, g%listed puede ser true
   ! pero b%tesselated false...
   call ngroup_sort_atom(g,i)
