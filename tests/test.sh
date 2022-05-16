@@ -34,7 +34,7 @@ if [[ "$tests" == *"gcmc"* ]]; then
 	cd ..
 fi
  
-echo "Saliendo de carpeta de tests..."
+echo "Saliendo de carpeta del test..."
 cd ..
 
 echo "¡Listo!"
