@@ -181,11 +181,6 @@ type, public :: group
   ! XXX: Note that igroup might be a better resource
   procedure :: atom => group_atombyindex 
 
-  ! Basic inquires
-  ! --------------
-  procedure :: inq_insphere
-           
-
   procedure :: write => group_write
   generic :: write(formatted) => write
   ! procedure :: write => group_write
@@ -295,27 +290,18 @@ type, public :: atom
   ! Propiedades que defino afuera de e para que se mas rapidamente accedida
   ! (en general la 1/masa esta en los cuellos de botella de los algoritmos)
   integer                  :: z=119 ! The generic element
-  real(dp)                 :: mass=1.0_dp,one_mass=1.0_dp,one_sqrt_mass=1.0_dp
+  real(dp)                 :: mass=1.0_dp
   real(dp)                 :: q=0.0_dp  ! Carga
   real(dp)                 :: s=1.0_dp  ! sigma
   real(dp)                 :: e=0.0_dp  ! epsilon
   character(:),allocatable :: sym
   integer                  :: sp=0      ! Hybridization
 
-  ! Constrain. Si bconst=true el atomo tiene un constrain. Se colapsa la
-  ! fuerza en direccion al vector vconst si lconst=T o se borra la componente
-  ! de la fueza en direccion al vector si lconst=F. Idem con la velocidad. Asi
-  ! la particula queda fija en un plano o en un eje. Tambien la puedo forzar
-  ! directamente haciendolo con la posicion
-  real(dp)              :: vconst(dm)=0.0_dp
-  real(dp),allocatable  :: pconst(:) ! posicion incial del constrain
-  logical               :: bconst=.false.,lconst=.false.
-
-  !  Enlaces y moleculas.... TOFIX
-  integer      :: abondid(20)=0  ! el indicie dentro de la molecula de los asociados
-  integer      :: abonds=0  ! el numero de asociados
-  integer      :: molid=0   ! el indice de la molecula
-  integer      :: amolid=0  ! el indice dentro de la molecula
+  ! !  Enlaces y moleculas.... TOFIX
+  ! integer      :: abondid(20)=0  ! el indicie dentro de la molecula de los asociados
+  ! integer      :: abonds=0  ! el numero de asociados
+  ! integer      :: molid=0   ! el indice de la molecula
+  ! integer      :: amolid=0  ! el indice dentro de la molecula
 
   ! ----- Propiedades mecanicas
   real(dp),pointer       :: pos(:)=>null(),   &!propieties of atom. [a][..][m/s][..]
@@ -331,25 +317,15 @@ type, public :: atom
   real(dp),dimension(dm) :: acel2  =0._dp,& !derivada primera de la aceleración
                             acel3  =0._dp,& !derivada segunda de la aceleración
                             acel4  =0._dp,& !derivada tercera de la aceleración
-                            pos_eq =0._dp,& !para ver el desplazamiento y decidir entrar al hyperespacio
                             pos_v  =0._dp,& !posicion relativa al punto v
-                            vel_v  =0._dp,& !velocidad relativa al punto v
-                            vel_rot=0._dp,& !velocidad de rotacion
-                            vel_vib=0._dp,& !velocidad de vibracion
-                            pos_cm =0._dp,& !posicion relativa al cm del grupo
-                            vel_cm =0._dp   !velocidad relativa al cm del grupo
+                            vel_v  =0._dp
 
   !para ver el desplazamiento en la lista de vecinos. Esto lo establezco bien
   !grande para forzar la primera actualizacion del verlet
   real(dp),dimension(dm) :: pos_old =1.e8_dp, old_cg=1.e8_dp
 
   real(dp)               :: epot=0.d0,                & !energia potencial total[ev]
-                            erot=0.d0,erot_ss=0.d0,   & !energia rotacional relative to system and ss [ev]
-                            evib=0.d0,evib_ss=0.d0,   & !energia vibracional relative to system and ss [ev]
-                            rho=0.d0,cord=0.d0,       & !densidad.. o algun otro parametro
                             border=0.d0                 !Orden de Enlace
-
-  real(dp)               :: maxdisp2=0 !desplazamiento maximo a un determinada T de grupo
 
   contains
 
@@ -440,9 +416,8 @@ subroutine atom_setpbc(a,pbc)
 ! Set atom pbc and allocate ghosts  
 class(atom),target,intent(inout) :: a
 logical,intent(in)               :: pbc(dm)
-class(group),pointer             :: g
 type(atom),pointer               :: og
-integer                          :: i,j
+integer                          :: i
 
 a%pbc(:)=pbc(:)
 
@@ -550,18 +525,8 @@ a1 % acel2(:)   = a2 % acel2(:)
 a1 % acel3(:)   = a2 % acel3(:)
 a1 % acel4(:)   = a2 % acel4(:)
 a1 % pos_old(:) = a2 % pos_old(:)
-a1 % pos_v(:)   = a2 % pos_v(:)
-a1 % vel_v(:)   = a2 % vel_v(:)
 
 a1 % epot    = a2 % epot
-a1 % erot    = a2 % erot
-a1 % erot_ss = a2 % erot_ss
-a1 % evib    = a2 % evib
-a1 % evib_ss = a2 % evib_ss
-a1 % rho     = a2 % rho
-a1 % molid   = a2 % molid
-a1 % sp      = a2 % sp
-a1 % s       = a2 % s
 
 end subroutine atom_asign
 
@@ -686,13 +651,6 @@ integer                   :: z
 a%z = z
 a%mass = elements%o(z)%mass
 a%sym = elements%o(z)%sym
-if(a%mass==0._dp) then
-  a%one_mass = 0._dp
-  a%one_sqrt_mass = 0._dp
-else
-  a%one_mass = 1.0_dp/a%mass
-  a%one_sqrt_mass = sqrt(a%one_mass)
-endif
 
 end subroutine
 
@@ -763,15 +721,36 @@ deallocate(g%alist)
 end subroutine group_destroy
  
 subroutine group_write(g, unit, iotype, v_list, iostat, iomsg)
+use gems_strings, only: str
 class(group),intent(in)   :: g
 integer,intent(in)         :: unit
 character(*),intent(in)    :: iotype
 integer,intent(in)         :: v_list(:)
 integer,intent(out)        :: iostat
 character(*),intent(inout) :: iomsg  
-
-write(unit,*) "PEPE"
-
+character(:),allocatable   :: wfmt
+ 
+! Format descriptor
+select case(size(v_list))
+case(0) ! default
+  wfmt = '(i0)'
+case(2)
+  wfmt = '(i'//str(v_list(1))//')'
+case default
+  iostat = 1
+  iomsg = 'wrong number of format descriptors'
+  return
+end select
+           
+iostat=0
+select case(iotype)
+case('DT','DTnat')
+  write(unit,wfmt,iostat=iostat,iomsg=iomsg)  g%nat
+case default
+  iostat = 1
+  iomsg = 'unexpected iotype'
+end select
+ 
 end subroutine
  
 ! Include atoms
@@ -839,7 +818,6 @@ subroutine group_detach_link(g,la)
 class(group)               :: g
 class(atom), pointer       :: a
 type(atom_dclist), pointer :: la, prev
-integer                    :: n
 logical                    :: found
 
 ! Delete group from atom register
@@ -924,7 +902,6 @@ end subroutine group_all_destroy_attempt
 subroutine group_all_destroy(g)
 ! Destroy all atoms from group
 class(group)               :: g
-type(atom_dclist), pointer :: la
 type(atom), pointer        :: a
 
 do while(g%nat/=0)
@@ -1080,38 +1057,7 @@ do l = 1,dm
 enddo
 
 end function vdistance
-                 
-! Basic inquires
-! --------------
-
-function inq_insphere(g,ctr,rad2)  result(over)
-! Check whether the position of any atom of g lies within a spherical region in space.
-use gems_program_types, only: distance
-class(group),intent(in)     :: g
-real(dp), intent(in)        :: ctr(dm), rad2
-logical                     :: over
-type(atom_dclist), pointer  :: la
-real(dp)                    :: idist,interatomic,first
-integer                     :: i
-real(dp)                    :: vd(dm), rd
-
-over=.true.
-
-la => la%next
-do i = 1,g%nat
-  la => la%next
-  
-  vd(:) = distance(la%o%pos,ctr,la%o%pbc)
-  rd = dot_product(vd,vd)
-
-  if (rd<rad2) return
-   
-enddo
-
-over=.false.
-
-end function 
-          
+         
  
 ! igroup events (indexed atoms)
 ! =============================
@@ -1227,7 +1173,7 @@ end subroutine igroup_detach_atom
      
 subroutine igroup_update_index(g)
 ! Update index
-use gems_strings, only: operator(.ich.)
+use gems_strings, only: str
 use gems_errors, only: wlog, werr
 class(igroup)              :: g
 class(atom),pointer        :: a
@@ -1270,7 +1216,7 @@ g%update=.true.
 ! Write into log file 
 ! TODO: Build a warning if several calls are made to this subroutine
 ! and set up a CLI to control/deactivate `aupd`
-call wlog('GRP','Index of group '//.ich.g%id//' updated')
+call wlog('GRP','Index of group '//str(g%id)//' updated')
 
 end subroutine igroup_update_index
 
@@ -1282,7 +1228,7 @@ use gems_program_types, only: box
 class(atom),target,intent(in)  :: o2
 type(atom),pointer             :: o
 class(group),pointer           :: g
-integer                        :: j,i
+integer                        :: j
 integer                        :: r(:)
 
 ! Allocate new ghost
@@ -1331,7 +1277,7 @@ end function isghost
 
 subroutine ghost_from_atom(a,rcut)
 ! Create ghost images for an atom.
-use gems_program_types, only: box, one_box, n1cells
+use gems_program_types, only: box, n1cells
 real(dp)                     :: r(dm)
 real(dp),intent(in)          :: rcut
 type(atom)                   :: a
@@ -1426,7 +1372,6 @@ end subroutine
      
 
 subroutine ghost_switch(og,rcut)
-use gems_program_types, only: box, n1cells
 type(atom),pointer      :: og, o
 class(group),pointer    :: g
 integer                 :: i

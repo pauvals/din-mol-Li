@@ -23,11 +23,11 @@ implicit none
 
 private
 
-interface operator(.ich.)
+interface str
   module procedure int2char,float2char
 end interface
 
-public    :: upcase,locase,operator(.ich.),int2char0,int2char
+public    :: upcase,locase,str,int2char0
 public    :: contar_cifras
 
 character(len=*),parameter,public ::    &
@@ -57,21 +57,41 @@ if(i<0) c=c+1
 
 end function  
 
-function int2char(i)
+function int2char(i,fmt_)
 ! Convert integer to string
 ! https://stackoverflow.com/a/30103608/1342186
-integer,intent(in)        :: i
-character(:),allocatable  :: int2char
-character(range(i)+2)     :: tmp
-write(tmp,'(i0)') i
+character(:),allocatable           :: int2char
+integer,intent(in)                 :: i
+character(*),intent(in),optional   :: fmt_
+character(:),allocatable           :: wfmt
+character(range(i)+2)              :: tmp
+  
+if(present(fmt_)) then
+  wfmt=fmt_
+else
+  wfmt = '(i0)'
+endif
+                      
+write(tmp,wfmt) i
 int2char = trim(tmp)
 end function  
 
-function float2char(i)
+function float2char(i,fmt_)
 ! Convert float to string
-real(dp),intent(in)          :: i
-character(20)                :: float2char
-write(float2char,'(f10.6)') i 
+character(:),allocatable           :: float2char
+real(dp),intent(in)                :: i
+character(*),intent(in),optional   :: fmt_
+character(:),allocatable           :: wfmt
+character(50)                      :: tmp
+
+if(present(fmt_)) then
+  wfmt=fmt_
+else
+  wfmt = '(e25.12)'
+endif
+
+write(tmp,wfmt) i
+float2char = trim(tmp)
 end function   
 
 subroutine upcase(word)
