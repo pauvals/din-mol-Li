@@ -295,13 +295,6 @@ type, public :: atom
   real(dp)                 :: s=1.0_dp  ! sigma
   real(dp)                 :: e=0.0_dp  ! epsilon
   character(:),allocatable :: sym
-  integer                  :: sp=0      ! Hybridization
-
-  ! !  Enlaces y moleculas.... TOFIX
-  ! integer      :: abondid(20)=0  ! el indicie dentro de la molecula de los asociados
-  ! integer      :: abonds=0  ! el numero de asociados
-  ! integer      :: molid=0   ! el indice de la molecula
-  ! integer      :: amolid=0  ! el indice dentro de la molecula
 
   ! ----- Propiedades mecanicas
   real(dp),pointer       :: pos(:)=>null(),   &!propieties of atom. [a][..][m/s][..]
@@ -313,19 +306,13 @@ type, public :: atom
   !it has the info of the subdomain/processor it belongs.
   integer                :: boxcr(dm)=0
   logical                :: pbc(dm)=.false. !PBC para ese atomo
-
-  real(dp),dimension(dm) :: acel2  =0._dp,& !derivada primera de la aceleración
-                            acel3  =0._dp,& !derivada segunda de la aceleración
-                            acel4  =0._dp,& !derivada tercera de la aceleración
-                            pos_v  =0._dp,& !posicion relativa al punto v
-                            vel_v  =0._dp
+  logical                :: skip=.false.
 
   !para ver el desplazamiento en la lista de vecinos. Esto lo establezco bien
   !grande para forzar la primera actualizacion del verlet
   real(dp),dimension(dm) :: pos_old =1.e8_dp, old_cg=1.e8_dp
 
-  real(dp)               :: epot=0.d0,                & !energia potencial total[ev]
-                            border=0.d0                 !Orden de Enlace
+  real(dp)               :: epot=0.d0    !energia potencial total[ev]
 
   contains
 
@@ -521,9 +508,6 @@ a1 % pbc(:)   = a2 % pbc(:)
 call atom_setelmnt(a1,a2%z)
 
 a1 % acel(:)    = a2 % acel(:)
-a1 % acel2(:)   = a2 % acel2(:)
-a1 % acel3(:)   = a2 % acel3(:)
-a1 % acel4(:)   = a2 % acel4(:)
 a1 % pos_old(:) = a2 % pos_old(:)
 
 a1 % epot    = a2 % epot
@@ -839,12 +823,14 @@ call all_changed(g)
 
 end subroutine group_detach_link
            
-subroutine group_detach_atom(g,a)
-! Detach atom from group `alist`
-class(group)               :: g
-type(atom_dclist), pointer :: la
-class(atom),target         :: a
-integer                    :: i
+subroutine group_detach_atom(g,a,la_)
+! Detach atom from group. Optionally return la_ pointer to previous node,
+! useful when call from inside a loop trough g%alist 
+class(group)                         :: g
+class(atom),target                   :: a
+integer                              :: i
+type(atom_dclist), pointer, optional :: la_
+type(atom_dclist), pointer           :: la
 
 la => g%alist
 do i =1,g%nat
@@ -855,6 +841,7 @@ do i =1,g%nat
  
   ! Delete group from atom register
   call g%detach_link(la)
+  if(present(la_)) la_ => la
                     
   return
 enddo
@@ -1145,11 +1132,13 @@ end subroutine igroup_attach_atom
 ! Remove atoms
 ! ------------
 
-subroutine igroup_detach_atom(g,a)
-! Detach atom from `alist` and `a`
+subroutine igroup_detach_atom(g,a,la_)
+! Detach atom from group. Optionally return la_ pointer to previous node,
+! useful when call from inside a loop trough g%alist 
 class(igroup)              :: g
 class(atom),target         :: a
 integer                    :: i
+type(atom_dclist), pointer, optional :: la_
  
 ! Search index of `a`
 i=a%gid(g)
@@ -1159,7 +1148,11 @@ if(i==-1) return
 g%a(i)%o=>null()
               
 ! Detach atom
-call group_detach_atom(g,a)
+if(present(la_)) then
+  call group_detach_atom(g,a,la_)
+else
+  call group_detach_atom(g,a)
+endif  
 
 ! FIXME: Seg fault with this  
 ! ! Update index if null count is above a fraction of the array size.  

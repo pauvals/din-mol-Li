@@ -143,13 +143,14 @@ endif
               
 end subroutine cgroup_attach_atom
 
-subroutine cgroup_detach_atom(g,a)
+subroutine cgroup_detach_atom(g,a,la_)
 ! Detach atom `a` from cgroup `g`
 class(cgroup)         :: g
 class(atom),target    :: a
 class(atom),pointer   :: aj
 integer               :: i
 integer               :: rc(3)
+type(atom_dclist), pointer, optional :: la_
 
 ! Attempt to remove atom from cells
 if(g%tessellated) then
@@ -158,8 +159,12 @@ if(g%tessellated) then
 endif
 
 ! Detach atom
-call g%igroup_detach_atom(a)
-
+if(present(la_)) then
+  call g%igroup_detach_atom(a,la_)
+else
+  call g%igroup_detach_atom(a)
+endif  
+              
 ! Clean null items
 if(g%update) then
   deallocate(g%next)

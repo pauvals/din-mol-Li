@@ -88,6 +88,7 @@ Program_Types.o: Constants.o Errors.o Elements.o
 dana.o: Groups.o Neighbor.o Errors.o Elements.o Constants.o
 Program_Types.o: Constants.o Errors.o Elements.o
 Groups.o:        Constants.o Elements.o Errors.o Program_Types.o
+Cells.o:    Program_Types.o Constants.o Groups.o Errors.o
 Neighbor.o: Program_Types.o Constants.o Groups.o Errors.o Cells.o
 
 clean-local:

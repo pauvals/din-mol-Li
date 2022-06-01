@@ -18,7 +18,7 @@ if [[ "$tests" == *"brown"* ]]; then
 	rm -f Li.xyz data_brown
 
 	time ( ../../src/dana > data_brown )
-	diff <(tail -n 2711 Li.xyz) ref.xyz > /dev/null && echo -e "\e[1;103mOk_Brown\e[0m" || echo -e "\e[1;101mFAIL_Brown\e[0m"
+	diff <(tail -n 2410 Li.xyz) ref.xyz > /dev/null && echo -e "\e[1;103mOk_Brown\e[0m" || echo -e "\e[1;101mFAIL_Brown\e[0m"
 	cd ..
 fi
  
@@ -30,7 +30,7 @@ if [[ "$tests" == *"gcmc"* ]]; then
 	rm -f Li.xyz data_$x
 
 	time ( ../../src/dana > data_$x )
-	diff <(tail -n 589 Li.xyz) ref.xyz > /dev/null && echo -e	"\e[1;103mOk_$x\e[0m" || echo -e "\e[1;101mFAIL_$x\e[0m"
+	diff <(tail -n 604 Li.xyz) ref.xyz > /dev/null && echo -e	"\e[1;103mOk_$x\e[0m" || echo -e "\e[1;101mFAIL_$x\e[0m"
 	cd ..
 fi
  

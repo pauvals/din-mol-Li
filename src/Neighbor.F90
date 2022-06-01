@@ -223,10 +223,11 @@ endif
         
 end subroutine ngroup_attach_atom
 
-subroutine ngroup_detach_atom(g,a)
+subroutine ngroup_detach_atom(g,a,la_)
 class(ngroup)          :: g
 class(atom),target     :: a
 integer                :: i
+type(atom_dclist), pointer, optional :: la_
 
 ! Remove atom's neighbor list if exists 
 if(g%listed) then
@@ -237,7 +238,14 @@ endif
 ! Detach atom
 call g%ref%detach(a)
 call g%b%detach(a)
-call g%igroup_detach_atom(a)
+
+! Detach atom
+if(present(la_)) then
+  call g%igroup_detach_atom(a,la_)
+else
+  call g%igroup_detach_atom(a)
+endif  
+ 
  
 ! Clean null items
 if(g%update) then

@@ -1,7 +1,7 @@
 program din_mol_Li
   use gems_groups, only: group, atom, atom_dclist, sys, gindex
   use gems_neighbor, only: test_update, ngroup, ngindex, nn_vlist, nupd_vlist
-  use gems_elements, only: set_z, elements_init
+  use gems_elements, only: set_z, elements_init,elements
   use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_t2, wstd, sclock_max, sclock_rate,logunit
   use gems_constants, only: time1, dp, sp
 
@@ -29,6 +29,9 @@ program din_mol_Li
   type(atom), pointer             :: pa=>null(), pb=>null()
   real(dp)            :: prob,max_vel=0._dp, msd_u= 0._dp, msd_t= 0._dp, msd_max= 0._dp
 
+  ! Contador de choques
+  integer             :: choques=0, choques2=0, choques3=0
+
   ! Parametros de integración
   real(dp)            :: h          ! paso de tiempo
   integer             :: nst        ! nro de pasos
@@ -44,7 +47,6 @@ program din_mol_Li
   ! Varios
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros
-  real(dp)            :: vm(3)        ! Vector 3D auxiliar
   real(dp)            :: dist, rhomedia, cstdev, factor, factor2
 
   ! Esto es para Ermak
@@ -58,7 +60,7 @@ program din_mol_Li
   ! Esto es para GCMC
   logical             :: s_gcmc=.false.
   type(group)         :: gcmc
-  real(dp)            :: gcmc_pad, act
+  real(dp)            :: act
   integer             :: nadj
   type(atom_dclist), pointer :: la 
   
@@ -67,6 +69,7 @@ program din_mol_Li
 
   ! Group used to compute neighbors list
   type(ngroup)        :: hs
+  type(atom),pointer  :: o1
    
   ! Init wall time
   call system_clock(count_rate=sclock_rate)
@@ -175,8 +178,27 @@ program din_mol_Li
       call cbrownian_hs(hs,h)
     endif
  
+    ! Update neighbors
     call test_update()
-    
+ 
+    ! Solve overlaps
+    call overlap_moveback(hs)
+ 
+    msd_t= msd_t/hs%ref%nat
+    msd_max= max(msd_max,msd_t)
+ 
+    ! Add new CG to the ref group
+    ! NOTE: Should we allow chain reaction instead?
+    la=> hs%ref%alist
+    do j = 1, hs%ref%nat
+      la=> la%next
+      o1=> la%o
+      if (o1%sym/='F') cycle
+      call o1%setz(2)
+      call hs%ref%detach(o1,la)
+      if(s_gcmc) call gcmc%detach(o1)
+    enddo
+         
     if(s_gcmc) call gcmc_run(gcmc)
       
     ! Calcula cant. de partículas en reservorio o sensor
@@ -233,8 +255,13 @@ program din_mol_Li
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplazamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
+  call wstd(); write(logunit,'("numero total de choques: ",i0)') choques
+  call wstd(); write(logunit,'("numero total de choques en 2da vuelta: ",i0)') choques2
+  call wstd(); write(logunit,'("numero total de choques sin solucion: ",i0)') choques3
   call wstd(); write(logunit,'("MSD maximo en x-y: ",e10.3)') msd_max
- 
+
+
+  call elements%destroy()
 contains
 
 subroutine config()
@@ -253,7 +280,7 @@ subroutine config()
     call chunk%init()
   case('gcmc')
     s_gcmc=.true.
-    read(15,*) gcmc_pad, act, nadj
+    read(15,*) act, nadj
   case default
     call werr('Unknown reservoir type',.true.)
   end select
@@ -281,13 +308,22 @@ subroutine entrada()
 end subroutine entrada
 
 subroutine pos_inic()
+use gems_program_types, only: distance 
+use gems_program_types, only: tbox, box_setvars  
 integer             :: n 
 real(dp),allocatable:: r(:,:) !posic.
-real(dp)            :: Mol, dif(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
+real(dp)            :: Mol, v1(3),v2(3),dif(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
 real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
 integer             :: i,j,l,k,idum
 
 idum=1231
+
+! Set the box
+tbox(:,:)= 0._dp
+tbox(1,1)= xi
+tbox(2,2)= yi
+tbox(3,3)= zmax
+call box_setvars()
 
 ! Cálculo del nro. de partículas
 ! n= Molaridad * Volumen(A^3) * 1e-27 L/A^3 * 6.022e23 (Nro Avogadro)
@@ -315,7 +351,9 @@ do i=1,n
     do j=1,i-1 
 
       !Veo distancia Li-Li
-      dif(:)=r(i,:)-r(j,:)
+      v1(:)=r(i,:)
+      v2(:)=r(j,:)
+      dif(:)=distance(v2,v1,[.true.,.true.,.false.])
       dif2=dot_product(dif,dif)
 
       if (dif2<r0*r0) cycle intento
@@ -339,7 +377,6 @@ end subroutine pos_inic
 
 ! Leer configuración inicial
 subroutine config_inic()
-use gems_program_types, only: tbox, box_setvars  
 integer :: i
 type(atom_dclist), pointer :: la
 character(10)     :: sym
@@ -401,14 +438,6 @@ end do
 close(11)
 
 allocate(ranv(n,3))
-
-! Set the box
-tbox(:,:)= 0._dp
-tbox(1,1)= xi
-tbox(2,2)= yi
-tbox(3,3)= zmax
-call box_setvars()
- 
 
 ! Calculo la velocidad neta del sistema/Sino como que se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
 ! internas ;)
@@ -513,29 +542,29 @@ subroutine calc_rho(rho) !Densidad/concentrac.
   ! Dos opciones: pistón,
   ! o con sensor: "debajo" está el sistema, y "encima" está 
   ! un volumen extra de átomos.
-
-  integer::i,g
-  real(dp)::vol,min_vol
+  real(dp)::vol,min_vol,z
   real(dp),intent(out)::rho
+  type(atom_dclist), pointer :: la 
+  integer::i,g
 
   g=0
   min_vol=box(1)*box(2)*2.5_dp
 
+  if(s_chunk) then
+    z=z1
+  else
+    z=zmax
+  endif
+
+  la => sys%alist
   do i=1, sys%nat ! Para contar las partícs. por encima de z0
-   pa=>sys%a(i)%o
-   if(s_piston) then 
-     if (pa%pos(3)>z0 .and. pa%pos(3)<zmax) g= g+1 ! piston
-   else if(s_chunk) then
-     if (pa%pos(3)>z0 .and. pa%pos(3)<z1) g= g+1   ! sensor+chunk
-   endif
+  la => la%next
+   pa=> la%o
+   if (pa%pos(3)>z0 .and. pa%pos(3)<z) g= g+1 ! piston
   enddo
 
-  if(s_piston) then 
-    vol=box(1)*box(2)*(zmax-z0) ! piston
-  else if(s_chunk) then
-    vol=box(1)*box(2)*(z1-z0)   ! sensor+chunk
-  end if
-  rho= g/vol
+  vol=box(1)*box(2)*(z-z0) ! piston
+  rho=g/vol
 end subroutine calc_rho
 
 subroutine bloques(g1, g2, nx, rho) ! Crece reservorio y agrega partículas
@@ -593,7 +622,7 @@ use gems_groups, only: group, atom, atom_asign, atom_dclist
   tbox(3,3)=zmax 
   call box_setvars()
   call test_update()
-                   
+           
 end subroutine bloques
 
 
@@ -664,80 +693,103 @@ do ii = 1,g%ref%nat
 
   max_vel=max(max_vel,dot_product(o1%vel,o1%vel))
 
-  call atom_hs_choque(o1, g)
- 
+  ! Mark atom to check for colisions
+  o1%skip=.false.
 enddo
 
-msd_t= msd_t/g%nat
-msd_max= max(msd_max,msd_t)
-
-! Add new CG to the ref group
-la=> g%ref%alist
-do i = 1, g%ref%nat
-  la=> la%next
-  o1=> la%o
-  if (o1%sym/='F') cycle
-  call o1%setz(2) ! CG
-  call g%ref%detach(o1)
-  if(s_gcmc) call gcmc%detach(o1)
-enddo
-               
+            
 end subroutine cbrownian_hs
 
-subroutine atom_hs_choque(o1, g)
+recursive subroutine overlap_moveback(g)
+! Search for colisions and try to solve them by a sequence of moving back
+! the particles to its previous positions.
+! NOTE: When using piston, overlaps due to reservoir compresion may remain
+! unsolve.
 use gems_groups, only: vdistance
-class(atom)     :: o1
-class(atom),pointer :: o2
-class(ngroup)   :: g
-real(dp)          :: ne, vd(3), dr
-integer         :: i, j, jj
+use gems_errors, only: werr
+class(ngroup)              :: g
+class(atom),pointer        :: o1,o2
+real(dp)                   :: ne, vd(3), dr
+integer                    :: i, ii, j, jj
+type(atom_dclist), pointer :: la 
+logical                    :: again
+
+again=.false.
 
 ! Choque con las demas particulas
-i = o1%gid(g)
-do jj = 1, g%nn(i)  ! sobre los vecinos
+la => g%ref%alist
+do ii = 1,g%ref%nat
+  la => la%next
+  o1 => la%o 
+     
+  if(o1%skip) cycle
+  o1%skip=.true.
 
-  j = g%list(i,jj)
-  o2 => g%a(j)%o
-             
-  ! Skip atoms in limbo
-  if(g%b_limbo) then
-    if(associated(o2,target=g%limbo)) cycle
-  endif
-             
-  vd(:) = vdistance(o1,o2,.true.)
-  dr = dot_product(vd,vd)
+  i = o1%gid(g)
+  do jj = 1, g%nn(i)  ! sobre los vecinos
 
-  if(dr>g%rcut2) cycle !Sí es necesario :B
+    j = g%list(i,jj)
+    o2 => g%a(j)%o
+               
+    ! Skip atoms in limbo
+    if(g%b_limbo) then
+      if(associated(o2,target=g%limbo)) cycle
+    endif
+               
+    vd(:) = vdistance(o1,o2,.true.)
+    dr = dot_product(vd,vd)
 
-  ! Deposicion por contacto con otra particula metalica
-  ! 1.19 es el radio de Mayers
-  if (o2%z==2) then
-    ! if(dr> 1.4161_dp) cycle
-    
-    ne=ran(idum)
-    if(ne<prob) then
-      call o1%setz(3)   ! F. Es inerte en este paso de tiempo
+    if(dr>g%rcut2) cycle !Sí es necesario :B
 
-      ! Permite deposicion en cadena pero depende del atom id.
-      ! Si queremos deposicion en cadnea sería mejor programarla
-      ! para que no dependa de el orden en que se ejecuta el do.
-      if (o1%pos(3)>z0) then
-         print*,'supero z0', o1%pos(3)
-         stop ! raro 
+    ! Deposicion por contacto con otra particula metalica
+    ! 1.19 es el radio de Mayers
+    if (o2%z==2) then
+      ! if(dr> 1.4161_dp) cycle
+      
+      ne=ran(idum)
+      if(ne<prob) then
+        call o1%setz(3)   ! F. Es inerte en este paso de tiempo
+
+        ! Permite deposicion en cadena pero depende del atom id.
+        ! Si queremos deposicion en cadnea sería mejor programarla
+        ! para que no dependa de el orden en que se ejecuta el do.
+        if (o1%pos(3)>z0) then
+           print *,'supero z0', o1%pos(3)
+           stop ! raro 
+        endif
+      else
+        o1%pos(:)= o1%old_cg(:) 
+        o1%skip=.false.
       endif
-    else
-      o1%pos(:)= o1%old_cg(:) 
+
+      exit
+
     endif
 
-    exit
-
-  endif
-
-  ! Esto pasa si es tipo==1 y están bajo rcut
-  o1%pos(:)= o1%old_cg(:) 
-  exit
+    ! Colision con otra particula
+    if(s_piston) then
+      if(all(o2%pos(:)==o2%old_cg(:))) then
+        if(all(o1%pos(:)==o1%old_cg(:))) then
+          choques3=choques3+1
+          cycle
+        endif
+      endif
+    endif
+    o2%pos(:)=o2%old_cg(:) 
+    o2%acel(:)=0._dp
+    o2%vel(:)=0._dp
+    o2%skip=.false.
+    choques=choques+1
+    again=.true.
+  enddo
+    
 enddo
-end subroutine atom_hs_choque
+
+i=choques
+if(again) call overlap_moveback(g)
+choques2=max(choques2,choques-i)
+
+end subroutine overlap_moveback
 
 ! Para PBC, e intento deposic. sobre electrodo
 subroutine atom_pbc(o1, depos)
@@ -895,19 +947,10 @@ do i = 1,g%ref%nat
   ! Para no calcular choques o deposic. sobre Li
   ! si depositó sobre electrodo
   if (depos) cycle
-  call atom_hs_choque(o1, g)
   ! probar, luego ver sino si usar knock
-enddo
-                                                                                            
-! Add new CG to the ref group
-la=> g%ref%alist
-do i = 1, g%ref%nat
-  la=> la%next
-  o1=> la%o
-  if (o1%sym/='F') cycle
-  call o1%setz(2)
-  call g%ref%detach(o1)
-  if(s_gcmc) call gcmc%detach(o1)
+ 
+  ! Mark atom to check for colisions
+  o1%skip=.false. 
 enddo
 
 end subroutine ermak_a
@@ -1151,26 +1194,24 @@ use gems_program_types, only: box, distance
 use gems_constants, only: kB_ui
 use gems_errors, only: werr
 class(group)               :: g
-real(dp)                   :: z1,z2
+real(dp)                   :: z0,zmax
 real(dp)                   :: r(3), vd(3), dr, v, rc, temp, beta
 type(atom_dclist), pointer :: la
 type(atom),pointer         :: o, ref
 class(group),pointer       :: gp
 integer                    :: i,j,n,m
  
-z1=zmax-gcmc_pad
-z2=zmax
 rc=hs%rcut
            
 ! Compute volume
-v=box(1)*box(2)*(z2-z1)
+v=box(1)*box(2)*(zmax-z0)
      
 ! Count particles in the control volume
 n=0
 la=>g%alist
 do j=1,g%nat
   la=>la%next
-  if(la%o%pos(3)<z1.or.la%o%pos(3)>z2) cycle
+  if(la%o%pos(3)<z0.or.la%o%pos(3)>zmax) cycle
   n=n+1
 enddo
     
@@ -1193,7 +1234,7 @@ adj: do i=1,nadj
     ! Random coordinates
     r(1)=ran(idum)*box(1)
     r(2)=ran(idum)*box(2)
-    r(3)=ran(idum)*(z2-z1)+z1
+    r(3)=ran(idum)*(zmax-z0)+z0
                    
     ! Check overlap
     la=>g%alist
@@ -1203,8 +1244,8 @@ adj: do i=1,nadj
 
       ! ! Skip particles outside the control volume.
       ! FIXME: consider PBC
-      ! if(o%pos(3)<z1-rc) cycle
-      ! if(o%pos(3)>z2+rc) cycle
+      ! if(o%pos(3)<z0-rc) cycle
+      ! if(o%pos(3)>zmax+rc) cycle
 
       ! Skip if overlapping
       vd(:) = distance(o%pos,r,o%pbc)
@@ -1253,8 +1294,8 @@ adj: do i=1,nadj
       o => la%o
 
       ! Skip particles outside the control volume.
-      if(o%pos(3)<z1) cycle
-      if(o%pos(3)>z2) cycle
+      if(o%pos(3)<z0) cycle
+      if(o%pos(3)>zmax) cycle
 
       m=m-1  
       if(m==0) exit
