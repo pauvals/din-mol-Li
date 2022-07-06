@@ -67,22 +67,16 @@ type, public :: group
 
 
   ! -----temperatura
-  real(dp)                    :: temp    =0.0_dp  ,&
-                                 tempvib =0.0_dp  ,&
+  real(dp)                    :: tempvib =0.0_dp  ,&
                                  temprot =0.0_dp  ,&
                                  mass    =0.0_dp
   ! -----energies
   real(dp)                    :: ekin    =0.0_dp  ,&
                                  epot    =0.0_dp
   ! -----center of mass
-  real(dp),dimension(dm)      :: cm_pos  =0.0_dp  ,&
-                                 cg_pos  =0.0_dp  ,&
-                                 cm_vel  =0.0_dp
-  ! -----rg
-  real(dp)                    :: rg_pos  =0.0_dp
+  real(dp),dimension(dm)      :: cg_pos  =0.0_dp  
+
   ! -----angular properties
-  real(dp)                    :: erot    =0.0_dp  ,&
-                                 evib    =0.0_dp
   real(dp),dimension(3)       :: ang_mom =0.0_dp  ,&
                                  ang_vel =0.0_dp
   real(dp),dimension(3,3)     :: inercia =0.0_dp
@@ -113,29 +107,22 @@ type, public :: group
   ! inquire sea mas eficientes
 
   ! -----temperatura
-  logical                     :: b_temp    =.false. ,&
-                                 b_tempvib =.false. ,&
+  logical                     :: b_tempvib =.false. ,&
                                  b_temprot =.false. ,&
                                  b_mass    =.false.
   ! -----energies
-  logical                     :: b_ekin    =.false. ,&
-                                 b_epot    =.false.
+  logical                     :: b_epot    =.false.
   ! ----- pressure
   logical                     :: b_virial   =.false. ,&
                                  b_pressure =.false.
 
   ! -----center of mass
-  logical                     :: b_cm_pos  =.false. ,&
-                                 b_cg_pos  =.false. ,&
-                                 b_cm_vel  =.false.
-  ! -----radio de giro
-  logical                     :: b_rg_pos  =.false.
+  logical                     :: b_cg_pos  =.false. 
 
   ! -----angular properties
-  logical                     :: b_erot    =.false. ,&
-                                 b_evib    =.false.
   logical                     :: b_ang_mom =.false. ,&
                                  b_ang_vel =.false.
+
   logical                     :: b_inercia =.false. ,&
                                  b_covar   =.false.
   ! -----geometria y morfologia
@@ -938,22 +925,15 @@ end subroutine gindex_epot_changed
 subroutine all_changed(g)
 class(group) :: g
 g%b_mass     =.false.
-g%b_erot     =.false.
-g%b_evib     =.false.
-g%b_cm_vel   =.false.
 g%b_ang_mom  =.false.
 g%b_ang_vel  =.false.
 g%b_maxpos   =.false.
 g%b_minpos   =.false.
 g%b_mainaxis =.false.
-g%b_cm_pos   =.false.
-g%b_rg_pos   =.false.
 g%b_covar    =.false.
 g%b_inercia  =.false.
 g%b_virial   =.false.
 g%b_pressure =.false.
-g%b_ekin    =.false.
-g%b_temp    =.false.
 g%b_tempvib =.false.
 g%b_temprot =.false.
 g%b_mass     =.false.
@@ -962,16 +942,11 @@ end subroutine all_changed
             
 subroutine pos_changed(g)
 class(group) :: g
-g%b_erot     =.false.
-g%b_evib     =.false.
-g%b_cm_vel   =.false.
 g%b_ang_mom  =.false.
 g%b_ang_vel  =.false.
 g%b_maxpos   =.false.
 g%b_minpos   =.false.
 g%b_mainaxis =.false.
-g%b_cm_pos   =.false.
-g%b_rg_pos   =.false.
 g%b_covar    =.false.
 g%b_inercia  =.false.
 g%b_virial   =.false.
@@ -987,13 +962,8 @@ end subroutine epot_changed
                           
 subroutine vel_changed(g)
 class(group) :: g
-g%b_ekin    =.false.
-g%b_temp    =.false.
 g%b_tempvib =.false.
 g%b_temprot =.false.
-g%b_erot    =.false.
-g%b_evib    =.false.
-g%b_cm_vel  =.false.
 g%b_ang_mom =.false.
 g%b_ang_vel =.false.
 g%b_pressure =.false.
@@ -1022,17 +992,17 @@ endfunction
 ! Properties
 ! ----------
 
-function vdistance(i,j,mic) result(vd)
+subroutine vdistance(vd,i,j,mic)
 !calculates the distance of two atoms with or without minimum image convention
 use gems_program_types, only: box, one_box
-real(dp),dimension(dm)  :: vd
+real(dp),intent(out)    :: vd(dm)
 type(atom),intent(in)   :: i,j
 logical,intent(in)      :: mic
 logical                 :: pbc(dm)
 integer                 :: l
   
 ! Distancia
-vd=i%pos-j%pos
+vd(:)=i%pos(:)-j%pos(:)
 
 ! Convencion de imagen minima
 if(.not.mic) return
@@ -1043,7 +1013,7 @@ do l = 1,dm
   if (pbc(l)) vd(l)=vd(l)-box(l)*idnint(vd(l)*one_box(l))
 enddo
 
-end function vdistance
+end subroutine vdistance
          
  
 ! igroup events (indexed atoms)

@@ -79,6 +79,7 @@ type, extends(igroup), public :: cgroup
 
   procedure :: sort => cgroup_sort, cgroup_sort_atom
   procedure :: unsort => cgroup_unsort_atom
+  procedure :: resort => cgroup_resort_atom
              
 end type
 
@@ -107,7 +108,6 @@ class(cgroup),target  :: g
 class(atom),target    :: a
 integer               :: i
 integer,allocatable   :: t_next(:)
-integer               :: aux1(dm)
 integer,intent(out),optional :: l_
 integer                      :: l
 
@@ -268,8 +268,7 @@ subroutine cgroup_sort(g)
 ! Sort g atoms into the g cells.
 ! TODO: Flag when sorting is needed, if not skip.
 class(cgroup),intent(inout)  :: g
-integer                      :: i,aux1(dm)
-type(atom),pointer           :: a
+integer                      :: i
 
 g%head(:,:,:) = 0
 do i = 1,g%amax
@@ -351,7 +350,29 @@ endif
 call werr('Unsort cgroup particle fail',.not.removed)
 
 end subroutine cgroup_unsort_atom
- 
+                             
+subroutine cgroup_resort_atom(g,i,oldp)
+! Re-sort atom after move from oldp to current position.
+class(cgroup),intent(inout)  :: g
+integer                      :: i,ci(dm),co(dm)
+real(dp)                     :: oldp(dm),auxp(dm)
+type(atom),pointer           :: a
+        
+a => g%a(i)%o
+
+ci(:)=int(a%pos(:)/g%cell(:))+1
+co(:)=int(oldp(:)/g%cell(:))+1
+
+if(all(co(:)==ci(:))) return
+
+auxp(:)=a%pos(:)
+a%pos(:)=oldp(:)
+call cgroup_unsort_atom(g,i)
+a%pos(:)=auxp(:)
+call cgroup_sort_atom(g,i)
+
+end subroutine cgroup_resort_atom
+                             
 #ifdef DIM3
 
 function cell_pbc(g,r,mic)

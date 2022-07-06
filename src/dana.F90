@@ -160,7 +160,6 @@ program din_mol_Li
   call timer_start()
 
   do i=1,nst
-
     ! Da un paso #wii
 
     if (integrador) then
@@ -183,7 +182,10 @@ program din_mol_Li
  
     ! Solve overlaps
     call overlap_moveback(hs)
- 
+       
+    ! Update neighbors (give error if not used again)
+    call test_update()
+         
     msd_t= msd_t/hs%ref%nat
     msd_max= max(msd_max,msd_t)
  
@@ -198,8 +200,10 @@ program din_mol_Li
       call hs%ref%detach(o1,la)
       if(s_gcmc) call gcmc%detach(o1)
     enddo
-         
-    if(s_gcmc) call gcmc_run(gcmc)
+    
+    if(s_gcmc) then
+      call gcmc_run(gcmc)
+    endif
       
     ! Calcula cant. de partículas en reservorio o sensor
     call calc_rho(rho)
@@ -315,6 +319,7 @@ real(dp),allocatable:: r(:,:) !posic.
 real(dp)            :: Mol, v1(3),v2(3),dif(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
 real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
 integer             :: i,j,l,k,idum
+logical,parameter   :: pbc(3)=[.true.,.true.,.false.]
 
 idum=1231
 
@@ -353,7 +358,7 @@ do i=1,n
       !Veo distancia Li-Li
       v1(:)=r(i,:)
       v2(:)=r(j,:)
-      dif(:)=distance(v2,v1,[.true.,.true.,.false.])
+      dif(:)=distance(v2,v1,pbc)
       dif2=dot_product(dif,dif)
 
       if (dif2<r0*r0) cycle intento
@@ -368,7 +373,7 @@ do i=1,n
       stop
   endif
 
-write(12,*) 'Li',r(i,:),mLi
+write(12,'(a,4(x,f25.12))') 'Li',r(i,1),r(i,2),r(i,3),mLi
 
 enddo
 close(12)
@@ -408,7 +413,7 @@ do i=1,n
   allocate(pa)
   call pa%init()
 
-  read(11,*) sym,pa%pos(:)
+  read(11,'(a,3(x,f25.12))') sym,pa%pos(:)
   call pa%setsym(sym) ! Asigna algunos valores según tipo de átomo
   pa%force(:)=0._dp
   pa%pos_old(:)=pa%pos(:)
@@ -736,7 +741,7 @@ do ii = 1,g%ref%nat
       if(associated(o2,target=g%limbo)) cycle
     endif
                
-    vd(:) = vdistance(o1,o2,.true.)
+    call vdistance(vd,o1,o2,.true.)
     dr = dot_product(vd,vd)
 
     if(dr>g%rcut2) cycle !Sí es necesario :B
@@ -759,6 +764,7 @@ do ii = 1,g%ref%nat
         endif
       else
         o1%pos(:)= o1%old_cg(:) 
+        ! TODO: resort?
         o1%skip=.false.
       endif
 
@@ -776,6 +782,7 @@ do ii = 1,g%ref%nat
       endif
     endif
     o2%pos(:)=o2%old_cg(:) 
+    ! TODO: resort?
     o2%acel(:)=0._dp
     o2%vel(:)=0._dp
     o2%skip=.false.
@@ -1194,7 +1201,6 @@ use gems_program_types, only: box, distance
 use gems_constants, only: kB_ui
 use gems_errors, only: werr
 class(group)               :: g
-real(dp)                   :: z0,zmax
 real(dp)                   :: r(3), vd(3), dr, v, rc, temp, beta
 type(atom_dclist), pointer :: la
 type(atom),pointer         :: o, ref
@@ -1220,7 +1226,6 @@ enddo
        
 ! Attempted adjustments 
 adj: do i=1,nadj
-
   ref => g%alist%next%o
   beta = sqrt(kB_ui*Tsist/ref%mass)
   call werr('No more particles',.not.associated(ref))
