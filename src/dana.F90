@@ -321,8 +321,6 @@ real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
 integer             :: i,j,l,k,idum
 logical,parameter   :: pbc(3)=[.true.,.true.,.false.]
 
-idum=1231
-
 ! Set the box
 tbox(:,:)= 0._dp
 tbox(1,1)= xi
