@@ -316,7 +316,7 @@ use gems_program_types, only: distance
 use gems_program_types, only: tbox, box_setvars  
 integer             :: n 
 real(dp),allocatable:: r(:,:) !posic.
-real(dp)            :: Mol, v1(3),v2(3),dif(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
+real(dp)            :: Mol, v1(3),v2(3),dif_pos(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
 real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
 integer             :: i,j,l,k,idum
 logical,parameter   :: pbc(3)=[.true.,.true.,.false.]
@@ -356,8 +356,8 @@ do i=1,n
       !Veo distancia Li-Li
       v1(:)=r(i,:)
       v2(:)=r(j,:)
-      dif(:)=distance(v2,v1,pbc)
-      dif2=dot_product(dif,dif)
+      dif_pos(:)=distance(v2,v1,pbc)
+      dif2=dot_product(dif_pos,dif_pos)
 
       if (dif2<r0*r0) cycle intento
 
