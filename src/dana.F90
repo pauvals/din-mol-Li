@@ -62,7 +62,7 @@ program din_mol_Li
   type(group)         :: gcmc
   real(dp)            :: act
   integer             :: nadj
-  type(atom_dclist), pointer :: la 
+  type(atom_dclist), pointer :: la, lb 
   
   ! Grupos varios
   type(group)         :: chunk
@@ -175,6 +175,26 @@ program din_mol_Li
     else
       ! Para usar din. Browniana, y "esferas duras"
       call cbrownian_hs(hs,h)
+      ! Para chequear influencia deposic. en perfiles Cottrell:
+      ! la=> hs%ref%alist
+      ! do j = 1, hs%ref%nat
+      !   la=> la%next
+      !   o1=> la%o
+      !   if (o1%sym/='F') cycle
+      !   lb => la%prev
+      !   call o1%dest()
+      !   deallocate(o1)
+      !   la => lb
+      ! ! Fin chequeo
+      ! enddo
+      ! la=> hs%ref%alist
+      ! do j = 1, hs%ref%nat
+      !   la=> la%next
+      !   o1=> la%o
+      !   if (o1%sym/='F') cycle 
+      !   print *, 'error'
+      !   stop
+      ! enddo
     endif
  
     ! Update neighbors
@@ -655,7 +675,7 @@ end subroutine maxz
 
 subroutine cbrownian_hs(g,h)
 class(ngroup)              :: g
-type(atom), pointer        :: o1 
+class(atom), pointer        :: o1 
 type(atom_dclist), pointer :: la 
 real(dp),intent(in)        :: h
 real(dp)                   :: fac1, r1, posold, vd(3)
@@ -677,7 +697,6 @@ do ii = 1,g%ref%nat
      dif= dif_sei
   endif
 
-  ! TODO: chequear sea el algoritmo de mayers- ¿si? 24.2.22
   fac1 = sqrt(2._dp*dif*h) 
 
   do j = 1,3
@@ -799,7 +818,7 @@ end subroutine overlap_moveback
 ! Para PBC, e intento deposic. sobre electrodo
 subroutine atom_pbc(o1, depos)
 use gems_program_types, only: box
-class(atom) :: o1
+class(atom),pointer :: o1
 integer     :: j
 real(dp)    :: ne
 logical     :: depos
@@ -850,28 +869,18 @@ if(o1%pos(3)<=0._dp) then
     depos= .true.
 
     ! Para chequeo Cottrell
+    ! call o1%dest()
+    ! deallocate(o1)
     ! o1%pos(:)=[0.,0.,-1.e3] 
+    ! return
 
-    !!!!!
-    ! Vers. vieja (Langevin 2019)
-    !
-    ! call o1%setz(2) !Le dice que se congele ;)
-    ! call g%ref%detach(o1)
-    ! o1%pos(3)=0._dp 
-    ! cycle !Cicla el do más cercano
-    !
-    ! Vers. vieja (Langevin 2019)
-    !!!!!
-
-
-! else !Acá rechazo el congelamiento y rebota
-! 
-!   o1%pos(3)=o1%pos(3)+2*(1._dp-o1%pos(3))
-!   o1%vel(3)=-o1%vel(3)
   endif
 
+  ! XXX: atomos depositados también rebotan. Sería + consistente
+  ! si no lo hicieran (ver cbrownian_hs)
   o1%pos(:) = o1%old_cg(:)
-  ! depos= .true. ! ¿No va dentro del anterior if?
+  ! FIXME: con el XXX de arriba se debería chequear colisiones tb. en deposic.
+
 endif
 end subroutine atom_pbc
 
@@ -908,7 +917,7 @@ subroutine ermak_a(g,ranv)
 
 ! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263. Ed. vieja
 class(ngroup)    :: g
-type(atom), pointer        :: o1 
+class(atom), pointer        :: o1 
 type(atom_dclist), pointer :: la 
 real(dp),intent(out)       :: ranv(:,:)
 real(dp)                   :: r1 ,r2, ranr
