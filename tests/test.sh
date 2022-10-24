@@ -18,7 +18,7 @@ if [[ "$tests" == *"brown"* ]]; then
 	rm -f Li.xyz data_brown
 
 	time ( ../../src/dana > data_brown )
-	diff <(tail -n 1808 Li.xyz) ref.xyz > /dev/null && echo -e "\e[1;103mOk_Brown\e[0m" || echo -e "\e[1;101mFAIL_Brown\e[0m"
+	diff <(tail -n 1507 Li.xyz) ref.xyz > /dev/null && echo -e "\e[1;103mOk_Brown\e[0m" || echo -e "\e[1;101mFAIL_Brown\e[0m"
 	cd ..
 fi
  
