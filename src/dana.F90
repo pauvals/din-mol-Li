@@ -336,9 +336,9 @@ use gems_program_types, only: distance
 use gems_program_types, only: tbox, box_setvars  
 integer             :: n 
 real(dp),allocatable:: r(:,:) !posic.
-real(dp)            :: Mol, v1(3),v2(3),dif_pos(3), alto, dif2  ! molaridad, diferencia entre vectores posic., alto caja sim.
+real(dp)            :: Mol, v1(3),v2(3),dif_pos(3), alto, dif2 ! molaridad, diferencia entre vectores posic., alto caja sim.
 real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
-integer             :: i,j,l,k,idum
+integer             :: i,j,l,k
 logical,parameter   :: pbc(3)=[.true.,.true.,.false.]
 
 ! Set the box
