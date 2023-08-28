@@ -14,12 +14,23 @@ Repo for a Molecular Dynamics program to study Li+ ions deposition onto a Li met
 ### + info
 There are three possible reservoir types to study, and two positions integrators.
 
+### Compiling and testing
+
+    # After changes in Makefile.am or configure.ac
+    autoreconf -fi
+    # To create Makefile
+    ./configure
+
+    make clean
+    make # or make dist, distributable
+    cd tests
+    ./test.sh
+
 <!---
 Agregar sobre:
 Contacto
 Licencia
 Salida de datos
-comments? questions? email us at info at welcometonightvale dot com. or follow us on twitter, at nightvaleradio. or listen to your walls for a while
 dana's name has its roots in WtNV's Dana Cardinal :)
 -->
 

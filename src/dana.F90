@@ -47,6 +47,7 @@ program dana
   ! Varios
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros
+  integer             :: try, depo    ! Parts. cercanas a electrodo y deposic.
   real(dp)            :: dist, rhomedia, cstdev, factor, factor2
 
   ! Ermak
@@ -154,10 +155,20 @@ program dana
   open(12,File='E.dat')
   open(13,File='T.dat')
   open(14,File='rho.dat')
+  open(15,File='try.dat')
+  open(16,File='depo.dat')
+
+  ! Para contar partículas que intentan deposic.
+  try= 0
+  depo= 0
 
   call salida() ! config. inic. en el primer paso ;)
 
   call timer_start()
+
+  ! Para contar partículas que intentan deposic.
+  try= 0
+  depo= 0
 
   do i=1,nst
     ! Da un paso #wii
@@ -176,26 +187,6 @@ program dana
       ! Para usar din. Browniana, y ~esferas duras
       call cbrownian_hs(hs,h)
 
-      ! Para estudiar influencia deposic. en perfiles Cottrell:
-      ! la=> hs%ref%alist
-      ! do j = 1, hs%ref%nat
-      !   la=> la%next
-      !   o1=> la%o
-      !   if (o1%sym/='F') cycle
-      !   lb => la%prev
-      !   call o1%dest()
-      !   deallocate(o1)
-      !   la => lb
-      ! ! Fin chequeo
-      ! enddo
-      ! la=> hs%ref%alist
-      ! do j = 1, hs%ref%nat
-      !   la=> la%next
-      !   o1=> la%o
-      !   if (o1%sym/='F') cycle 
-      !   print *, 'error'
-      !   stop
-      ! enddo
     endif
  
     ! Update neighbors
@@ -210,6 +201,28 @@ program dana
     msd_t= msd_t/hs%ref%nat
     msd_max= max(msd_max,msd_t)
  
+    ! Para estudiar influencia deposic. en perfiles Cottrell:
+    ! la=> hs%ref%alist
+    ! do j = 1, hs%ref%nat
+    !   la=> la%next
+    !   o1=> la%o
+    !   if (o1%sym/='F') cycle
+    !   lb => la%prev
+    !   ! if(s_gcmc) call gcmc%detach(o1)
+    !   call o1%dest()
+    !   deallocate(o1)
+    !   la => lb
+    ! ! Fin chequeo
+    ! enddo
+    ! la=> hs%ref%alist
+    ! do j = 1, hs%ref%nat
+    !   la=> la%next
+    !   o1=> la%o
+    !   if (o1%sym/='F') cycle 
+    !   print *, 'error'
+    !   stop
+    ! enddo
+
     ! Add new CG to the ref group
     ! NOTE: Should we allow chain reaction instead?
     la=> hs%ref%alist
@@ -876,11 +889,14 @@ do ii = 1,g%ref%nat
 
     ! Deposicion por contacto con otra particula metalica
     ! 1.19 es el radio de Mayers
+
     if (o2%z==2) then
       ! if(dr> 1.4161_dp) cycle
       
+      try= try + 1
       ne=ran(idum)
       if(ne<prob) then
+        depo= depo + 1 ! para contar CG
         call o1%setz(3)   ! F. Es inerte en este paso de tiempo
 
         ! Permite deposicion en cadena pero depende del atom id.
@@ -1151,6 +1167,14 @@ call kion(sys,temp)
 write(13,*)t,temp
 
 write(14,*)t,rho
+
+write(15,*)t,try
+try= 0
+write(16,*)t,depo
+depo= 0
+
+flush(16)
+flush(15)
 flush(14)
 flush(13)
 flush(12)
@@ -1207,17 +1231,13 @@ msd_t= msd_t + msd_u
 
 ! Si toca el electrodo implicito ¿se congela? (probabilidad ne)
 if(o1%pos(3)<=0._dp) then 
+  try= try + 1
   ne=ran(idum)
 
   if(ne<prob) then
+    depo= depo + 1
     call o1%setz(3)   ! Es inerte en este paso de tiempo
     depos= .true.
-
-    ! Para estudiar Cottrell
-    ! call o1%dest()
-    ! deallocate(o1)
-    ! o1%pos(:)=[0.,0.,-1.e3] 
-    ! return
 
   endif
 
