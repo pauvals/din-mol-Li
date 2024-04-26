@@ -161,10 +161,6 @@ program dana
   open(15,File='try.dat')
   open(16,File='depo.dat')
 
-  ! Para contar partículas que intentan deposic.
-  try= 0
-  depo= 0
-
   call salida() ! config. inic. en el primer paso ;)
 
   call timer_start()
