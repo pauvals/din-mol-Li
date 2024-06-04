@@ -122,7 +122,6 @@ program dana
 
   ! Generar posiciones inic.
   if (new_sim) call gen_pos_inic()
-  print *, 'ya paso gen_pos_inic'
 
   ! Define tamaño en z del sistema (sin contar el reservorio), y lee posic. inic.
   ! de partículas 
@@ -342,36 +341,42 @@ integer             :: i,j,l,k,n_CG,n_Li
 logical,parameter   :: pbc(3)=[.true.,.true.,.false.]
 character(10)       :: sym
 
-print *, 'gen_pos_inic'
 ! Calculo nro. de partículas
 ! n= Molaridad * Volumen(A^3) * 1e-27 L/A^3 * 6.022e23 (Nro Avogadro)
 ! Molaridad usada = 1 M
 Mol = 1._dp 
 alto = zmax - o
 n = Mol * xi * yi * alto * 6.022e-4 
-allocate(r(n,3))
 
 open(12,File='pos_inic.xyz')
-write(12,*) n  ! nro. total de átomos
-write(12,*)
 
 ! Leer primero las posic. inic. de CG.
 if (electrodo) then
-  print *, 'hay electrodo'
   open(13,File='CG_inic.xyz')
-  print *, 'abre archivo'
   read(13,*) n_CG
   read(13,*)
-  read(13,*) sym,r(i,:)
-  ! Escribo CGs existentes
-  write(12,'(a,4(x,f25.12))') sym,r(i,1),r(i,2),r(i,3),mLi
+
+  ! nro. total de átomos
+  allocate(r(n+n_CG,3))
+  write(12,*) n+n_CG  
+  write(12,*)
+
+  do i=1, n_CG
+    read(13,*) sym,r(i,:)
+    ! Escribo CGs existentes
+    write(12,'(a,4(x,f25.12))') sym,r(i,1),r(i,2),r(i,3),mLi
+  enddo
+
 else
   n_CG=0
+  ! nro. total de átomos
+  allocate(r(n,3))
+  write(12,*) n  
+  write(12,*)
 endif
 
 ! Recorro todas las particulas a crear
-!n_Li= n-n_CG
-do i=n_CG+1, n
+do i=n_CG+1, n+n_CG
 
   ! Recorro los intentos 
   intento: do k=1,10000
@@ -406,7 +411,6 @@ write(12,'(a,4(x,f25.12))') 'Li',r(i,1),r(i,2),r(i,3),mLi
 enddo
 close(12)
 close(13)
-print *, 'fin gen_pos_inic'
 
 
 end subroutine gen_pos_inic
@@ -475,10 +479,8 @@ factor2= rhomedia + cstdev
 ! 0.000577532941264052= STATS_mean
 ! 0.000107543058373559= 4*STATS_stddev
 
-print *, 'entra en config_inic'
 
 open(11,File='pos_inic.xyz')
-print *, 'lee pos_inic'
 read(11,*) n
 read(11,*)
 
@@ -931,7 +933,7 @@ do ii = 1,g%ref%nat
         ! Si queremos deposicion en cadnea sería mejor programarla
         ! para que no dependa de el orden en que se ejecuta el do.
         if (o1%pos(3)>z0) then
-           print *,'supero z0', o1%pos(3)
+           print *,'superó z0', o1%pos(3)
            stop ! raro 
         endif
       else
@@ -1261,11 +1263,12 @@ if(o1%pos(3)<=0._dp) then
   try= try + 1
   ne=ran(idum)
 
-  if(ne<prob) then
-    depo= depo + 1
-    call o1%setz(3)   ! Es inerte en este paso de tiempo
-    depos= .true.
-
+  if (electrodo.eqv..false.) then
+    if(ne<prob) then
+      depo= depo + 1
+      call o1%setz(3)   ! Es inerte en este paso de tiempo
+      depos= .true.
+    endif
   endif
 
   ! XXX: atomos depositados también rebotan. Sería + consistente
