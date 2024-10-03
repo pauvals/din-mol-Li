@@ -103,7 +103,11 @@ program dana
   eps(3,1) = eps(1,3)
   r0(1,3)  = 1.564_dp
   r0(3,1)  = r0(1,3)
-      
+ 
+  ! Para contar partículas que intentan deposic.
+  try= 0
+  depo= 0
+                      
   ! Init general del sistema de grupos
   call gindex%init()
   call ngindex%init()
@@ -164,10 +168,6 @@ program dana
 
   call timer_start()
 
-  ! Para contar partículas que intentan deposic.
-  try= 0
-  depo= 0
-
   do i=1,nst
     ! Da un paso #wii
 
@@ -186,7 +186,7 @@ program dana
       call cbrownian_hs(hs,h)
 
     endif
- 
+
     ! Update neighbors
     call test_update()
  
@@ -889,6 +889,7 @@ real(dp)                   :: ne, vd(3), dr
 integer                    :: i, ii, j, jj
 type(atom_dclist), pointer :: la 
 logical                    :: again
+integer, save              :: count=0
 
 again=.false.
 
@@ -967,7 +968,13 @@ do ii = 1,g%ref%nat
 enddo
 
 i=choques
-if(again) call overlap_moveback(g)
+if(again) then
+  count=count+1
+  call werr('Recursion limit in HS overlap solving',count==100)
+  call overlap_moveback(g)
+else
+  count=0
+endif
 choques2=max(choques2,choques-i)
 
 end subroutine overlap_moveback
