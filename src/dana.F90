@@ -363,8 +363,8 @@ if (electrodo) then
 
   do i=1, n_CG
     read(13,*) sym,r(i,:)
-    ! Escribo CGs existentes
-    write(12,'(a,4(x,f25.12))') sym,r(i,1),r(i,2),r(i,3),mLi
+    ! Escribo CGs existentes. Explicito que sym va a ser CG.
+    write(12,'(a,4(x,f25.12))') 'CG',r(i,1),r(i,2),r(i,3),mLi
   enddo
 
 else
