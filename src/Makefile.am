@@ -1,14 +1,16 @@
 bin_PROGRAMS = dana
 
 dana_SOURCES = dana.F90 \
-               Constants.F90 \
-               Cells.F90  \
-               Neighbor.F90  \
-               Elements.F90  \
-               Program_Types.F90  \
-               Errors.f90  \
-               Strings.f90  \
-               Groups.F90 
+               gems_core/Constants.F90 \
+               gems_core/Strings.f90  \
+               gems_core/Errors.f90  \
+               gems_core/Elements.F90  \
+               gems_core/Math.F90  \
+               gems_core/Program_Types.F90  \
+               gems_core/Groups.F90 \
+               gems_core/Halo.F90 \
+               gems_core/Cells.F90  \
+               gems_core/Neighbor.F90
     
 # zeros...
 dana_LDADD =
@@ -80,17 +82,17 @@ all: dana
 
 
 Constants.o:     
-Strings.o:  Constants.o
-Errors.o:   Constants.o Strings.o
-Elements.o: Constants.o Strings.o Errors.o
+gems_core/Strings.o:  gems_core/Constants.o
+gems_core/Errors.o:   gems_core/Constants.o gems_core/Strings.o
+gems_core/Elements.o: gems_core/Constants.o gems_core/Strings.o gems_core/Errors.o
  
-Program_Types.o: Constants.o Errors.o Elements.o
-dana.o: Groups.o Neighbor.o Errors.o Elements.o Constants.o
-Program_Types.o: Constants.o Errors.o Elements.o
-Groups.o:        Constants.o Elements.o Errors.o Program_Types.o
-Cells.o:    Program_Types.o Constants.o Groups.o Errors.o
-Neighbor.o: Program_Types.o Constants.o Groups.o Errors.o Cells.o
+gems_core/Math.o: gems_core/Constants.o gems_core/Errors.o
+gems_core/Program_Types.o: gems_core/Constants.o gems_core/Errors.o gems_core/Elements.o
+gems_core/Groups.o:        gems_core/Constants.o gems_core/Elements.o gems_core/Errors.o gems_core/Math.o gems_core/Program_Types.o
+gems_core/Halo.o:          gems_core/Constants.o gems_core/Groups.o gems_core/Program_Types.o
+gems_core/Cells.o:         gems_core/Program_Types.o gems_core/Constants.o gems_core/Groups.o gems_core/Errors.o gems_core/Halo.o
+gems_core/Neighbor.o:      gems_core/Program_Types.o gems_core/Constants.o gems_core/Groups.o gems_core/Errors.o gems_core/Cells.o gems_core/Halo.o
+dana.o: gems_core/Groups.o gems_core/Neighbor.o gems_core/Errors.o gems_core/Elements.o gems_core/Constants.o
 
 clean-local:
 	rm -f *.mod
-

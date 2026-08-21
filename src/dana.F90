@@ -1,6 +1,6 @@
 program dana
   use gems_groups, only: group, atom, atom_dclist, sys, gindex
-  use gems_neighbor, only: test_update, ngroup, ngindex, nn_vlist, nupd_vlist
+  use gems_neighbor, only: sync_execution_views, ngroup, nn_vlist, nupd_vlist
   use gems_elements, only: set_z, elements_init,elements
   use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_t2, wstd, sclock_max, sclock_rate,logunit
   use gems_constants, only: time1, dp, sp
@@ -71,6 +71,7 @@ program dana
 
   ! Group used to compute neighbors list
   type(ngroup)        :: hs
+  type(group), target :: hs_focus, hs_candidate
   type(atom),pointer  :: o1
    
   ! Init wall time
@@ -110,7 +111,6 @@ program dana
                       
   ! Init general del sistema de grupos
   call gindex%init()
-  call ngindex%init()
   call sys%init()
  
   ! Leer run parameters:  semilla, probabilidad, nro. pasos
@@ -118,7 +118,10 @@ program dana
   call entrada()
         
   ! Init lista para choques de esferas duras
+  call hs_focus%init()
+  call hs_candidate%init()
   call hs%init()
+  call hs%bind_groups(hs_focus, hs_candidate)
   call hs%setrc(3.2_dp) ! Maximo radio de corte
 
   ! Configure integrator and reservoir for the run.
@@ -143,7 +146,7 @@ program dana
   endif
 
   !Search neighbors
-  call test_update()
+  call sync_execution_views()
 
   if (integrador) call fuerza(hs,eps,r0)
 
@@ -174,7 +177,7 @@ program dana
     if (integrador) then
       ! Para trabajar con din. Langevin
       call ermak_a(hs,ranv)
-      ! FIXME: test_update must be always before force calculation
+      ! FIXME: sync_execution_views must be always before force calculation
       ! TODO: ver de sacar ya knock
       ! Ve si congela o rebota
       ! call knock(hs)
@@ -188,21 +191,21 @@ program dana
     endif
 
     ! Update neighbors
-    call test_update()
+    call sync_execution_views()
  
     ! Solve overlaps
     call overlap_moveback(hs)
        
     ! Update neighbors (give error if not used again)
-    call test_update()
+    call sync_execution_views()
          
-    msd_t= msd_t/hs%ref%nat
+    msd_t= msd_t/hs%focus%nat
     msd_max= max(msd_max,msd_t)
  
     ! Para estudiar desposic. ideal (Cottrell):
     if (ideal_dep) then
-      la=> hs%ref%alist
-      do j = 1, hs%ref%nat
+      la=> hs%focus%alist
+      do j = 1, hs%focus%nat
         la=> la%next
         o1=> la%o
         if (o1%sym/='F') cycle
@@ -213,8 +216,8 @@ program dana
         la => lb
       ! Fin chequeo
       enddo
-      la=> hs%ref%alist
-      do j = 1, hs%ref%nat
+      la=> hs%focus%alist
+      do j = 1, hs%focus%nat
         la=> la%next
         o1=> la%o
         if (o1%sym/='F') cycle 
@@ -225,13 +228,16 @@ program dana
 
     ! Add new CG to the ref group
     ! NOTE: Should we allow chain reaction instead?
-    la=> hs%ref%alist
-    do j = 1, hs%ref%nat
+    la=> hs%focus%alist
+    do j = 1, hs%focus%nat
       la=> la%next
       o1=> la%o
       if (o1%sym/='F') cycle
       call o1%setz(2)
-      call hs%ref%detach(o1,la)
+      lb => la%prev
+      call hs_focus%detach(o1)
+      call hs%focus%detach(o1)
+      la => lb
       if(s_gcmc) call gcmc%detach(o1)
     enddo
     
@@ -502,10 +508,10 @@ do i=1,n
   ! NOTA: hs%attach tiene que estar al final
   ! para que ande la lista de vecinos
   if (pa%sym=='CG') then
-    call hs%b%attach(pa)
+    call hs_candidate%attach(pa)
   else
-    call hs%ref%attach(pa)
-    call hs%b%attach(pa)
+    call hs_focus%attach(pa)
+    call hs_candidate%attach(pa)
   endif
   call hs%attach(pa)
 
@@ -776,8 +782,8 @@ do j=1,g2%nat
   call g1%attach(o2) ! Sys
 
   ! Lista de vecinos
-  call hs%b%attach(o2)
-  call hs%ref%attach(o2)
+  call hs_candidate%attach(o2)
+  call hs_focus%attach(o2)
   call hs%attach(o2)
 
   ! Si vos cambias el rcut, esto te va a hacer acordar de crear un nuevo chunk:
@@ -798,7 +804,7 @@ n= n + nx
 ! Agrega nuevos vecinos para los atomos agregados y los cercanos
 tbox(3,3)=zmax 
 call box_setvars()
-call test_update()
+call sync_execution_views()
            
 end subroutine bloques
 
@@ -835,8 +841,8 @@ real(dp)                   :: fac1, r1, posold, vd(3)
 integer                    :: i,j,ii
 logical                    :: depos
 
-la => g%ref%alist
-do ii = 1,g%ref%nat
+la => g%focus%alist
+do ii = 1,g%focus%nat
   la => la%next
   o1 => la%o 
 
@@ -894,8 +900,8 @@ integer, save              :: count=0
 again=.false.
 
 ! Choque con las demas particulas
-la => g%ref%alist
-do ii = 1,g%ref%nat
+la => g%focus%alist
+do ii = 1,g%focus%nat
   la => la%next
   o1 => la%o 
      
@@ -1019,8 +1025,8 @@ real(dp)                   :: r1 ,r2, ranr
 integer                    :: i,j
 logical                    :: depos
 
-la => g%ref%alist
-do i = 1,g%ref%nat
+la => g%focus%alist
+do i = 1,g%focus%nat
   la => la%next
   o1 => la%o 
 
@@ -1073,9 +1079,9 @@ type(atom_dclist), pointer :: la
 real(dp),intent(in)        :: ranv(:,:)
 integer                    :: i
 
-la => g%ref%alist
+la => g%focus%alist
 
-do i = 1,g%ref%nat
+do i = 1,g%focus%nat
   la => la%next
   o1 => la%o 
  
@@ -1099,9 +1105,9 @@ real(dp)            :: vd(3),dr,aux,b,c
 real(dp),intent(in) :: eps(3,3),r0(3,3)
 integer         :: i,j,ii,jj,l,k,m
 
-la => g%ref%alist
+la => g%focus%alist
 
-do i=1, g%ref%nat !n
+do i=1, g%focus%nat !n
   la => la%next
   o1 => la%o
   o1%force(:) = 0._dp
@@ -1110,8 +1116,8 @@ do i=1, g%ref%nat !n
 enddo
 
 ! Calcula interacc. (F) con las partícs. vecinas
-la => g%ref%alist
-do ii = 1, g%ref%nat
+la => g%focus%alist
+do ii = 1, g%focus%nat
   la => la%next 
   o1 => la%o
   i = o1%gid(g)
@@ -1298,8 +1304,8 @@ type(atom_dclist),pointer :: la
  
 ! Por todos los pares de particulas
 
-la => list%ref%alist
-do ii = 1,list%ref%nat
+la => list%focus%alist
+do ii = 1,list%focus%nat
   la => la%next
   o1 => la%o ! o1 es el único que puede ser CG
 
@@ -1350,13 +1356,13 @@ enddo
 
 
 ! Add new CG to the ref group
-la=> list%b%alist
-do i = 1, list%b%nat
+la=> list%candidate%alist
+do i = 1, list%candidate%nat
   la=> la%next
   o1=> la%o
   if (o1%sym/='F') cycle
   call o1%setz(2)
-  call list%ref%attach(o1)
+  call list%focus%attach(o1)
   call list%attach(o1)
 enddo
 
@@ -1465,4 +1471,3 @@ ran=am*ior(iand(im,ieor(ix,iy)),1)
 end function ran 
 
 end program
-
