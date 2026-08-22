@@ -22,6 +22,34 @@ AM_PROG_AR
 # Set FCFLAGS and FC
 : ${FCFLAGS=""} # Override default (i.e. "-g -O2")
 AC_PROG_FC
+
+AC_ARG_ENABLE([coarray],
+  AS_HELP_STRING([--enable-coarray@<:@=single|lib|compiler@:>@],
+                 [enable Fortran coarray runtime support; yes is equivalent to lib]),
+  [enable_coarray="${enableval}"],
+  [enable_coarray=no])
+
+AC_ARG_WITH([coarray-lib],
+  AS_HELP_STRING([--with-coarray-lib=LIBS],
+                 [libraries needed by the coarray runtime, e.g. -lcaf_mpi, -lcaf_shmem, or -lcaf_single]),
+  [COARRAY_LIBS="${withval}"],
+  [COARRAY_LIBS=""])
+
+COARRAY_FCFLAGS=
+AS_CASE([$enable_coarray],
+  [no], [],
+  [yes], [enable_coarray=lib],
+  [single], [COARRAY_FCFLAGS="-fcoarray=single"],
+  [lib], [COARRAY_FCFLAGS="-fcoarray=lib"],
+  [compiler], [],
+  [AC_MSG_ERROR([bad value "${enable_coarray}" for --enable-coarray; use no, single, lib, or compiler])])
+
+AS_IF([test "x$enable_coarray" != "xno"], [
+  AC_DEFINE([DANA_COARRAY], [1], [Define to enable Fortran coarray support])
+])
+
+AC_SUBST([COARRAY_FCFLAGS])
+AC_SUBST([COARRAY_LIBS])
  
 # External software
 # =================

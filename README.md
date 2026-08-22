@@ -26,6 +26,34 @@ There are three possible reservoir types to study, and two positions integrators
     cd tests
     ./test.sh
 
+### Coarrays
+
+The default build remains serial:
+
+    ./configure
+    make
+
+For a compiler-only sanity check with GNU Fortran:
+
+    ./configure --enable-coarray=single
+    make
+
+For a coarray runtime provided by the compiler wrapper, for example OpenCoarrays
+`caf` from Spack:
+
+    FC=caf ./configure --enable-coarray=compiler
+    make
+
+For GNU Fortran with an explicit runtime library:
+
+    ./configure --enable-coarray=lib --with-coarray-lib=-lcaf_shmem
+    make
+
+At this stage multi-image execution is intentionally conservative: image 1 runs
+the simulation and the other images wait at the coarray finalization barrier.
+This validates the runtime path before domain decomposition and halo exchange
+are introduced.
+
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.
 
