@@ -76,6 +76,8 @@ type, extends(igroup), public :: ngroup
   ! Neighbor list build in this module and used in any forcefield routine.
   integer,allocatable    :: nn(:)        ! Numero de vecinos al atomo i
   integer,allocatable    :: list(:,:)    ! Vecino m-th del i-th atom of the first iteracting group (local and ghost a)
+  integer,allocatable    :: focus_id(:)  ! Local ngroup rows that receive forces.
+  integer,allocatable    :: real_id(:)   ! Local real-atom row for each local row or ghost.
 
   ! Position snapshot owned by this neighbor execution view. It is used only
   ! for the Verlet displacement rebuild criterion and is keyed by local atom id.
@@ -171,6 +173,8 @@ g%candidate_source=>null()
 call ngroup_release_candidate_view(g)
 if(allocated(g%nn)) deallocate(g%nn)
 if(allocated(g%list)) deallocate(g%list)
+if(allocated(g%focus_id)) deallocate(g%focus_id)
+if(allocated(g%real_id)) deallocate(g%real_id)
 if(allocated(g%pos_old)) deallocate(g%pos_old)
 call ngroup_registry_release(g)
 call g%igroup%dest()
@@ -319,14 +323,69 @@ integer,intent(in)          :: n
 
 if(allocated(g%nn)) deallocate(g%nn)
 if(allocated(g%list)) deallocate(g%list)
+if(allocated(g%focus_id)) deallocate(g%focus_id)
+if(allocated(g%real_id)) deallocate(g%real_id)
 if(allocated(g%pos_old)) deallocate(g%pos_old)
 
 allocate(g%nn(n))
 allocate(g%list(n,g%mnb))
+allocate(g%focus_id(0))
+allocate(g%real_id(n))
+g%real_id(:)=0
 allocate(g%pos_old(dm,n))
 g%pos_old = 1.e8_dp
 
 end subroutine ngroup_allocate_neighbor_storage
+
+subroutine ngroup_compile_focus_ids(g)
+! Compile focus membership to local ngroup rows. Kernels consume this dense
+! list instead of resolving atom%gid(g) inside force/analysis loops.
+class(ngroup),intent(inout) :: g
+type(atom),pointer          :: a
+type(atom_dclist),pointer   :: la
+integer                     :: i, local_id
+
+if(allocated(g%focus_id)) deallocate(g%focus_id)
+allocate(g%focus_id(g%focus%nat))
+
+la => g%focus%alist
+do i = 1,g%focus%nat
+  la => la%next
+  a => la%o
+  local_id = a%gid(g)
+  call werr('Focus atom is missing from compiled neighbor view.',local_id<1)
+  g%focus_id(i)=local_id
+enddo
+
+end subroutine ngroup_compile_focus_ids
+
+subroutine ngroup_compile_real_ids(g)
+! Compile the local real-atom row for every local row. Ghost rows point back to
+! their prime atom row, allowing kernels to avoid atom%gid(g) in pair filters.
+class(ngroup),intent(inout) :: g
+type(atom),pointer          :: a
+integer                     :: i, local_id
+
+if(.not.allocated(g%real_id)) allocate(g%real_id(size(g%a)))
+if(size(g%real_id)<size(g%a)) then
+  deallocate(g%real_id)
+  allocate(g%real_id(size(g%a)))
+endif
+
+g%real_id(:)=0
+do i = 1,g%amax
+  if(.not.associated(g%a(i)%o)) cycle
+  a => g%a(i)%o
+  if(associated(a%prime)) then
+    local_id = a%prime%gid(g)
+    call werr('Ghost atom prime is missing from compiled neighbor view.',local_id<1)
+    g%real_id(i)=local_id
+  else
+    g%real_id(i)=i
+  endif
+enddo
+
+end subroutine ngroup_compile_real_ids
 
 integer function candidate_registry_find(source,rcut) result(idx)
 ! Locate a shared candidate view with the same logical source and halo cutoff.
@@ -475,10 +534,12 @@ subroutine ngroup_attach_atom(g,a,l_)
 class(ngroup),target   :: g
 class(atom),target     :: a
 integer, allocatable   :: t_nn(:), t_list(:,:)
+integer, allocatable   :: t_real_id(:)
 real(dp), allocatable  :: t_pos_old(:,:)
 integer                :: n,i
 integer,intent(out),optional :: l_
 integer                      :: l
+logical                      :: focus_atom
 
 call ngroup_attach_atom_roles(g,a)
 
@@ -489,15 +550,24 @@ if(l==0) return
 if(.not.g%has_rcut) return
  
 n=size(g%a)
+focus_atom = a%gid(g%focus)>0
+
 if(g%listed) then
   if(size(g%nn)<n) then
     allocate(t_nn(n))
+    t_nn(:)=0
     t_nn(:size(g%nn)) = g%nn(:)
     call move_alloc(to=g%nn,from=t_nn)
 
     allocate(t_list(n,g%mnb))
+    t_list(:,:)=0
     t_list(:size(g%list,1),:) = g%list(:,:)
     call move_alloc(to=g%list,from=t_list)
+
+    allocate(t_real_id(n))
+    t_real_id(:)=0
+    t_real_id(:size(g%real_id)) = g%real_id(:)
+    call move_alloc(to=g%real_id,from=t_real_id)
 
     allocate(t_pos_old(dm,n))
     t_pos_old = 1.e8_dp
@@ -506,7 +576,13 @@ if(g%listed) then
   endif
 
   i=a%id(l)
+  if(associated(a%prime)) then
+    g%real_id(i)=a%prime%gid(g)
+  else
+    g%real_id(i)=i
+  endif
   call ngroup_sort_atom(g,i)
+  if(focus_atom .and. .not.associated(a%prime)) call ngroup_compile_focus_ids(g)
   g%pos_old(:,i)=a%pos(:)
 else
   if(size(g%nn)<n) then
@@ -548,6 +624,8 @@ subroutine ngroup_detach_atom(g,a)
 class(ngroup)          :: g
 class(atom),target     :: a
 integer                :: i
+logical                :: real_atom
+logical                :: focus_atom
 
 if(.not.g%has_rcut) then
   if(a%gid(g)<1) return
@@ -557,6 +635,8 @@ if(.not.g%has_rcut) then
   return
 endif
 
+real_atom=.not.associated(a%prime)
+focus_atom=a%gid(g%focus)>0
 if(g%listed) then
   i=a%gid(g)
   if(i<1) return
@@ -578,8 +658,10 @@ endif
 
 if(g%listed) then
   g%a(i)%o=>g%limbo
+  if(allocated(g%real_id)) g%real_id(i)=0
   g%nlimbo=g%nlimbo+1
   g%b_limbo=.true.
+  if(real_atom .and. focus_atom) call ngroup_compile_focus_ids(g)
 endif
 
 end subroutine ngroup_detach_atom
@@ -610,6 +692,7 @@ if(a%gid(g%candidate)>0) then
     la => la%next
     aj => la%o
     j = aj%gid(g)
+    if(j<1 .or. j>size(g%nn)) cycle
 
     if(associated(aj,target=a)) cycle
 
@@ -686,6 +769,8 @@ rcut=rcut*rcut
 
 ! Clean atoms in limbo
 call g%clean()
+call ngroup_compile_real_ids(g)
+call ngroup_compile_focus_ids(g)
 
 !OMP: Creo varios threads
 !$OMP PARALLEL
@@ -696,7 +781,7 @@ la => g%focus%alist
 do ii = 1,g%focus%nat
   la => la%next
   ai => la%o
-  i = ai%gid(g)
+  i = g%focus_id(ii)
 
   !OMP: Se reparte la tarea entre los idle threads
   !$OMP TASK DEFAULT(NONE)     &
@@ -733,7 +818,7 @@ enddo
 !$OMP END PARALLEL
 
 g%listed=.true.
-if(g%focus%nat>0) nn_vlist=max(nn_vlist,maxval(g%nn(:g%focus%nat)))
+if(g%focus%nat>0) nn_vlist=max(nn_vlist,maxval(g%nn(g%focus_id(:))))
 
 end subroutine ngroup_verlet
 
@@ -791,6 +876,8 @@ rcut=rcut*rcut
 
 ! Clean atoms in limbo
 call g%clean
+call ngroup_compile_real_ids(g)
+call ngroup_compile_focus_ids(g)
    
 ! Sort in cells
 ! FIXME:DSAFR: sort must be here
@@ -805,11 +892,11 @@ do ii = 1,g%focus%nat
   ai => la%o
 
   !$OMP TASK DEFAULT(NONE)             &
-  !$OMP& FIRSTPRIVATE(ai)              &
+  !$OMP& FIRSTPRIVATE(ai,ii)           &
   !$OMP& SHARED(g,rcut,mic)            &
   !$OMP& PRIVATE(rc,i,nabor,nc,j,aj,k,vd,rd)
 
-  i = ai%gid(g)
+  i = g%focus_id(ii)
 
   ! Get cell index
   rc(:)=int(ai%pos(:)/g%candidate%cell(:))+1
@@ -853,7 +940,7 @@ enddo
 !$OMP END PARALLEL
 
 g%listed=.true.
-if(g%focus%nat>0) nn_vlist=max(nn_vlist,maxval(g%nn(:g%focus%nat)))
+if(g%focus%nat>0) nn_vlist=max(nn_vlist,maxval(g%nn(g%focus_id(:))))
  
 end subroutine ngroup_cells
 
