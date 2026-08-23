@@ -1,6 +1,4 @@
 program dana
-  use dana_parallel, only: parallel_init, parallel_finalize, parallel_image, &
-                           parallel_images, parallel_is_master
   use gems_groups, only: group, atom, atom_dclist, sys, gindex
   use gems_neighbor, only: sync_execution_views, ngroup, nn_vlist, nupd_vlist
   use gems_elements, only: set_z, elements_init,elements
@@ -50,6 +48,7 @@ program dana
   ! Varios
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros
+  integer             :: co_image, co_images
   integer             :: try, depo    ! Parts. cercanas a electrodo y deposic.
   real(dp)            :: dist, rhomedia, cstdev, factor, factor2
 
@@ -81,9 +80,16 @@ program dana
   call system_clock(count_max=sclock_max)
   call system_clock(sclock_t1)
 
-  call parallel_init()
+#ifdef DANA_COARRAY
+  co_image = this_image()
+  co_images = num_images()
+  sync all
+#else
+  co_image = 1
+  co_images = 1
+#endif
 
-  if (parallel_is_master()) then
+  if (co_image == 1) then
 
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
@@ -303,7 +309,7 @@ program dana
   endif 
  
 !  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
-  call wstd(); write(logunit,'("coarray images: ",i0,"; active simulation image: ",i0)') parallel_images, parallel_image
+  call wstd(); write(logunit,'("coarray images: ",i0,"; active simulation image: ",i0)') co_images, co_image
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplazamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
@@ -316,7 +322,9 @@ program dana
   call elements%destroy()
   endif
 
-  call parallel_finalize()
+#ifdef DANA_COARRAY
+  sync all
+#endif
 
 
 

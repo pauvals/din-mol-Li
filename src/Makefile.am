@@ -1,7 +1,6 @@
 bin_PROGRAMS = dana
 
-dana_SOURCES = dana_parallel.F90 \
-               dana.F90 \
+dana_SOURCES = dana.F90 \
                gems_core/Constants.F90 \
                gems_core/Strings.f90  \
                gems_core/Errors.f90  \
@@ -95,8 +94,7 @@ gems_core/Groups.o:        gems_core/Constants.o gems_core/Elements.o gems_core/
 gems_core/Halo.o:          gems_core/Constants.o gems_core/Groups.o gems_core/Program_Types.o
 gems_core/Cells.o:         gems_core/Program_Types.o gems_core/Constants.o gems_core/Groups.o gems_core/Errors.o gems_core/Halo.o
 gems_core/Neighbor.o:      gems_core/Program_Types.o gems_core/Constants.o gems_core/Groups.o gems_core/Errors.o gems_core/Cells.o gems_core/Halo.o
-dana_parallel.o:
-dana.o: dana_parallel.o gems_core/Groups.o gems_core/Neighbor.o gems_core/Errors.o gems_core/Elements.o gems_core/Constants.o
+dana.o: gems_core/Groups.o gems_core/Neighbor.o gems_core/Errors.o gems_core/Elements.o gems_core/Constants.o
 
 clean-local:
 	rm -f *.mod
