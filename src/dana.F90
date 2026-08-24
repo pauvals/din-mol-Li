@@ -61,6 +61,7 @@ program dana
   real(dp),allocatable:: ranv(:,:)
   real(dp),allocatable:: co_pos(:,:)[:]
   integer,allocatable :: atom_owner(:)
+  logical             :: focus_dirty = .false.
    
   ! GCMC
   logical             :: s_gcmc=.false.
@@ -133,7 +134,6 @@ program dana
 
   ! Configure integrator and reservoir for the run.
   call config_run()
-  call set_domain_bounds()
 
   ! Generar posiciones inic.
   if (new_sim .and. this_image() == 1) call gen_pos_inic()
@@ -209,8 +209,7 @@ program dana
     call sync_execution_views()
  
     ! Solve overlaps
-    call overlap_moveback(hs)
-    call sync_owned_positions()
+    call solve_overlaps_domain()
        
     ! Update neighbors (give error if not used again)
     call sync_execution_views()
@@ -260,6 +259,7 @@ program dana
     ! Reservoir 3 - GCMC:
     if(s_gcmc) then
       call gcmc_run(gcmc)
+      call sync_owned_positions()
     endif
       
     ! Cant. de partículas en reservorio o sensor
@@ -488,6 +488,7 @@ end subroutine config_run
 
 subroutine config_inic()
 ! configuración inicial
+use gems_program_types, only: tbox, box_setvars
 integer :: i
 !type(atom_dclist), pointer :: la
 character(10)     :: sym
@@ -499,6 +500,12 @@ if(s_chunk) then
   z1 = z0 + dist
   zmax = z1 + dist 
 endif
+
+if(num_images() > 1) then
+  tbox(3,3)=zmax
+  call box_setvars()
+endif
+call set_domain_bounds()
 
 ! Para luego actualizar reservorio
 rhomedia= 5.775329e-4_dp
@@ -653,7 +660,89 @@ enddo
 
 sync all
 
+call refresh_domain_ownership()
+
 end subroutine sync_owned_positions
+
+
+subroutine refresh_domain_ownership()
+! Recompute z-slab ownership from current replicated positions and rebuild the
+! local focus group consumed by the neighbor view.
+type(atom_dclist), pointer :: la
+integer                   :: i
+integer                   :: new_owner
+logical                   :: rebuild_focus
+
+if(.not.allocated(atom_owner)) return
+
+rebuild_focus = focus_dirty .or. num_images() > 1
+la => sys%alist
+do i=1,sys%nat
+  la => la%next
+  new_owner = owner_image_for_z(la%o%pos(3))
+  if(atom_owner(i) /= new_owner) rebuild_focus = .true.
+  atom_owner(i) = new_owner
+enddo
+
+if(.not.rebuild_focus) return
+
+call hs_focus%detach_all()
+
+la => sys%alist
+do i=1,sys%nat
+  la => la%next
+  if(la%o%sym == 'CG') cycle
+  if(atom_owner(i) == this_image()) call hs_focus%attach(la%o)
+enddo
+
+hs%listed = .false.
+focus_dirty = .false.
+sync all
+
+end subroutine refresh_domain_ownership
+
+
+subroutine solve_overlaps_domain()
+! The current hard-sphere overlap correction is not domain-local: resolving a
+! pair can move atoms that belong to different z slabs. Until halo ownership is
+! explicit, run this correction on image 1 and broadcast the corrected
+! positions back through the replicated-state bridge.
+if(num_images() == 1) then
+  call overlap_moveback(hs)
+  call sync_owned_positions()
+  return
+endif
+
+sync all
+
+if(this_image() == 1) then
+  call attach_all_focus_atoms()
+  call sync_execution_views()
+  call overlap_moveback(hs)
+endif
+
+if(allocated(atom_owner)) atom_owner(:) = 1
+call sync_owned_positions()
+
+end subroutine solve_overlaps_domain
+
+
+subroutine attach_all_focus_atoms()
+type(atom_dclist), pointer :: la
+integer                   :: i
+
+call hs_focus%detach_all()
+
+la => sys%alist
+do i=1,sys%nat
+  la => la%next
+  if(la%o%sym == 'CG') cycle
+  call hs_focus%attach(la%o)
+enddo
+
+hs%listed = .false.
+
+end subroutine attach_all_focus_atoms
 
 
 subroutine ensure_sync_storage()
@@ -664,6 +753,8 @@ integer                    :: i, nold
 if(allocated(atom_owner) .and. allocated(co_pos)) then
   if(size(atom_owner) == sys%nat .and. size(co_pos,2) == sys%nat) return
 endif
+
+focus_dirty = .true.
 
 nold = 0
 if(allocated(atom_owner)) then
@@ -948,6 +1039,7 @@ n= n + nx
 ! Agrega nuevos vecinos para los atomos agregados y los cercanos
 tbox(3,3)=zmax 
 call box_setvars()
+call sync_owned_positions()
 call sync_execution_views()
            
 end subroutine bloques
