@@ -52,10 +52,11 @@ For GNU Fortran with an explicit runtime library:
 
 Multi-image execution uses coarray intrinsics directly in `dana.F90`. The first
 domain-decomposition step splits the simulation box into z-slabs.
-Each image owns the `focus` atoms in its slab, while candidate atoms are still
-replicated. Owned atom positions are synchronized through a full replicated
-coarray buffer after updates. This is a correctness scaffold for neighbor/halo
-work, not the final scalable communication pattern.
+Each image owns the `focus` atoms in its slab and keeps neighbor candidates from
+its owned slab plus a z-halo of width `hs%rcut + nb_dcut`. Owned atom positions
+are still synchronized through a full replicated coarray buffer after updates.
+This is a correctness scaffold for neighbor/halo work, not the final scalable
+communication pattern.
 
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.

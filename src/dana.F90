@@ -1,6 +1,6 @@
 program dana
   use gems_groups, only: group, atom, atom_dclist, sys, gindex
-  use gems_neighbor, only: sync_execution_views, ngroup, nn_vlist, nupd_vlist
+  use gems_neighbor, only: sync_execution_views, ngroup, nn_vlist, nupd_vlist, nb_dcut
   use gems_elements, only: set_z, elements_init,elements
   use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_t2, wstd, sclock_max, sclock_rate,logunit
   use gems_constants, only: time1, dp, sp
@@ -319,6 +319,7 @@ program dana
 !  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
   call wstd(); write(logunit,'("coarray images: ",i0,"; active domain image: ",i0)') num_images(), this_image()
   call wstd(); write(logunit,'("domain z range: [",f10.3,",",f10.3,")")') zlo, zhi
+  call wstd(); write(logunit,'("domain atoms: focus=",i0," candidate=",i0)') hs_focus%nat, hs_candidate%nat
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplazamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
@@ -525,8 +526,9 @@ if(allocated(atom_owner)) deallocate(atom_owner)
 if(allocated(co_pos)) deallocate(co_pos)
 allocate(atom_owner(n))
 allocate(co_pos(3,n)[*])
-atom_owner(:)=1
-co_pos(:,:)=0._dp
+  atom_owner(:)=1
+  co_pos(:,:)=0._dp
+  focus_dirty=.true.
 
 do i=1,n
 
@@ -547,11 +549,9 @@ do i=1,n
   ! para que ande la lista de vecinos
   atom_owner(i) = owner_image_for_z(pa%pos(3))
 
-  if (pa%sym=='CG') then
-    call hs_candidate%attach(pa)
-  else
+  if (candidate_atom(pa)) call hs_candidate%attach(pa)
+  if (pa%sym/='CG') then
     if (owned_atom(pa)) call hs_focus%attach(pa)
-    call hs_candidate%attach(pa)
   endif
   call hs%attach(pa)
 
@@ -617,6 +617,23 @@ owned = a%pos(3) >= zlo .and. a%pos(3) < zhi
 if (this_image() == num_images()) owned = owned .or. a%pos(3) == zhi
 
 end function owned_atom
+
+
+logical function candidate_atom(a) result(candidate)
+class(atom),intent(in) :: a
+real(dp)               :: halo
+
+if(num_images() == 1) then
+  candidate = .true.
+  return
+endif
+
+halo = hs%rcut + nb_dcut
+candidate = a%pos(3) >= zlo-halo .and. a%pos(3) < zhi+halo
+if(this_image() == 1) candidate = candidate .and. a%pos(3) >= zlo
+if(this_image() == num_images()) candidate = candidate .or. a%pos(3) == zhi
+
+end function candidate_atom
 
 
 integer function owner_image_for_z(z) result(owner)
@@ -687,12 +704,13 @@ enddo
 if(.not.rebuild_focus) return
 
 call hs_focus%detach_all()
+call hs_candidate%detach_all()
 
 la => sys%alist
 do i=1,sys%nat
   la => la%next
-  if(la%o%sym == 'CG') cycle
-  if(atom_owner(i) == this_image()) call hs_focus%attach(la%o)
+  if(candidate_atom(la%o)) call hs_candidate%attach(la%o)
+  if(la%o%sym /= 'CG' .and. atom_owner(i) == this_image()) call hs_focus%attach(la%o)
 enddo
 
 hs%listed = .false.
@@ -732,10 +750,12 @@ type(atom_dclist), pointer :: la
 integer                   :: i
 
 call hs_focus%detach_all()
+call hs_candidate%detach_all()
 
 la => sys%alist
 do i=1,sys%nat
   la => la%next
+  call hs_candidate%attach(la%o)
   if(la%o%sym == 'CG') cycle
   call hs_focus%attach(la%o)
 enddo
