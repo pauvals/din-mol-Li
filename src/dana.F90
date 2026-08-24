@@ -1,6 +1,6 @@
 program dana
   use gems_groups, only: group, atom, atom_dclist, sys, gindex
-  use gems_neighbor, only: sync_execution_views, ngroup, nn_vlist, nupd_vlist, nb_dcut
+  use gems_neighbor, only: gems_sync_execution_views => sync_execution_views, ngroup, nn_vlist, nupd_vlist, nb_dcut
   use gems_elements, only: set_z, elements_init,elements
   use gems_errors, only: timer_dump, timer_start, sclock_t1, sclock_t2, wstd, sclock_max, sclock_rate,logunit
   use gems_constants, only: time1, dp, sp
@@ -51,6 +51,12 @@ program dana
   integer             :: i,j,k        ! Enteros
   integer             :: try, depo    ! Parts. cercanas a electrodo y deposic.
   real(dp)            :: dist, rhomedia, cstdev, factor, factor2
+  integer             :: prof_integrate_tick, prof_sync_pos_tick, prof_sync_views_tick
+  integer             :: prof_overlap_tick, prof_output_tick
+  real(dp)            :: prof_integrate=0._dp, prof_sync_pos=0._dp, prof_sync_views=0._dp
+  real(dp)            :: prof_overlap=0._dp, prof_output=0._dp
+  integer             :: prof_n_integrate=0, prof_n_sync_pos=0, prof_n_sync_views=0
+  integer             :: prof_n_overlap=0, prof_n_output=0
 
   ! Ermak
   logical             :: ermak 
@@ -189,6 +195,7 @@ program dana
   do i=1,nst
     ! Da un paso #wii
 
+    call prof_start(prof_integrate_tick)
     if (integrador) then
       ! Para trabajar con din. Langevin
       call ermak_a(hs,ranv)
@@ -198,17 +205,20 @@ program dana
       ! call knock(hs)
       call fuerza(hs,eps,r0)
       call ermak_b(hs,ranv)
+      call prof_stop(prof_integrate_tick, prof_integrate, prof_n_integrate)
       call sync_owned_positions()
 
     else
       ! Para usar din. Browniana, y ~esferas duras
       call cbrownian_hs(hs,h)
+      call prof_stop(prof_integrate_tick, prof_integrate, prof_n_integrate)
       call sync_owned_positions()
 
     endif
 
-    ! Update neighbors
-    call sync_execution_views()
+    ! Update neighbors for serial overlap solving. Multi-image overlap rebuilds
+    ! the all-atom view on image 1 inside solve_overlaps_domain().
+    if(num_images() == 1) call sync_execution_views()
  
     ! Solve overlaps
     call solve_overlaps_domain()
@@ -272,7 +282,9 @@ program dana
 
     ! Output 
     if (mod(i,nwr)==0) then
+      call prof_start(prof_output_tick)
       call salida()
+      call prof_stop(prof_output_tick, prof_output, prof_n_output)
       ! print*, 't', t
       ! print*, 'msd_t', msd_t
       ! print*, 'msd_max', msd_max
@@ -332,6 +344,7 @@ program dana
   call wstd(); write(logunit,'("numero total de choques en 2da vuelta: ",i0)') choques2
   call wstd(); write(logunit,'("numero total de choques sin solucion: ",i0)') choques3
   call wstd(); write(logunit,'("MSD maximo en x-y: ",e10.3)') msd_max
+  call report_profile()
 
 
   call elements%destroy()
@@ -341,6 +354,37 @@ program dana
 
 
 contains
+
+subroutine prof_start(tick)
+integer,intent(out) :: tick
+
+call system_clock(tick)
+
+end subroutine prof_start
+
+
+subroutine prof_stop(tick_start, total, ncall)
+integer,intent(in)    :: tick_start
+real(dp),intent(inout) :: total
+integer,intent(inout)  :: ncall
+integer               :: tick
+
+call system_clock(tick)
+total = total + (tick-tick_start)/real(sclock_rate,dp)
+ncall = ncall + 1
+
+end subroutine prof_stop
+
+
+subroutine report_profile()
+
+call wstd(); write(logunit,'("profile integrate: ",f10.3," s calls=",i0)') prof_integrate, prof_n_integrate
+call wstd(); write(logunit,'("profile sync_positions: ",f10.3," s calls=",i0)') prof_sync_pos, prof_n_sync_pos
+call wstd(); write(logunit,'("profile sync_neighbors: ",f10.3," s calls=",i0)') prof_sync_views, prof_n_sync_views
+call wstd(); write(logunit,'("profile overlap: ",f10.3," s calls=",i0)') prof_overlap, prof_n_overlap
+call wstd(); write(logunit,'("profile output: ",f10.3," s calls=",i0)') prof_output, prof_n_output
+
+end subroutine report_profile
 
 subroutine entrada()
 ! Some run conditions from entrada.ini
@@ -677,6 +721,7 @@ subroutine sync_owned_positions()
 type(atom_dclist), pointer :: la
 integer                   :: i, owner
 
+call prof_start(prof_sync_pos_tick)
 call ensure_sync_storage()
 call mark_visible_atoms()
 
@@ -700,6 +745,7 @@ enddo
 sync all
 
 call refresh_domain_ownership()
+call prof_stop(prof_sync_pos_tick, prof_sync_pos, prof_n_sync_pos)
 
 end subroutine sync_owned_positions
 
@@ -802,9 +848,11 @@ subroutine solve_overlaps_domain()
 ! pair can move atoms that belong to different z slabs. Until halo ownership is
 ! explicit, run this correction on image 1 and broadcast the corrected
 ! positions back through the replicated-state bridge.
+call prof_start(prof_overlap_tick)
 if(num_images() == 1) then
   call overlap_moveback(hs)
   call sync_owned_positions()
+  call prof_stop(prof_overlap_tick, prof_overlap, prof_n_overlap)
   return
 endif
 
@@ -818,8 +866,17 @@ endif
 
 if(allocated(atom_owner)) atom_owner(:) = 1
 call sync_owned_positions()
+call prof_stop(prof_overlap_tick, prof_overlap, prof_n_overlap)
 
 end subroutine solve_overlaps_domain
+
+
+subroutine sync_execution_views()
+call prof_start(prof_sync_views_tick)
+call gems_sync_execution_views()
+call prof_stop(prof_sync_views_tick, prof_sync_views, prof_n_sync_views)
+
+end subroutine sync_execution_views
 
 
 subroutine attach_all_focus_atoms()
