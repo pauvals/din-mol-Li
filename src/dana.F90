@@ -61,6 +61,8 @@ program dana
   real(dp),allocatable:: ranv(:,:)
   real(dp),allocatable:: co_pos(:,:)[:]
   integer,allocatable :: atom_owner(:)
+  integer,allocatable :: co_owner(:)[:]
+  logical,allocatable :: atom_visible(:)
   logical             :: focus_dirty = .false.
    
   ! GCMC
@@ -320,6 +322,9 @@ program dana
   call wstd(); write(logunit,'("coarray images: ",i0,"; active domain image: ",i0)') num_images(), this_image()
   call wstd(); write(logunit,'("domain z range: [",f10.3,",",f10.3,")")') zlo, zhi
   call wstd(); write(logunit,'("domain atoms: focus=",i0," candidate=",i0)') hs_focus%nat, hs_candidate%nat
+  if(allocated(atom_visible)) then
+    call wstd(); write(logunit,'("domain sync visible atoms: ",i0)') count(atom_visible)
+  endif
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplazamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
@@ -523,10 +528,16 @@ read(11,*) n
 read(11,*)
 
 if(allocated(atom_owner)) deallocate(atom_owner)
+if(allocated(co_owner)) deallocate(co_owner)
+if(allocated(atom_visible)) deallocate(atom_visible)
 if(allocated(co_pos)) deallocate(co_pos)
 allocate(atom_owner(n))
+allocate(co_owner(n)[*])
+allocate(atom_visible(n))
 allocate(co_pos(3,n)[*])
   atom_owner(:)=1
+  co_owner(:)=1
+  atom_visible(:)=.true.
   co_pos(:,:)=0._dp
   focus_dirty=.true.
 
@@ -621,7 +632,15 @@ end function owned_atom
 
 logical function candidate_atom(a) result(candidate)
 class(atom),intent(in) :: a
-real(dp)               :: halo
+
+candidate = candidate_z(a%pos(3))
+
+end function candidate_atom
+
+
+logical function candidate_z(z) result(candidate)
+real(dp),intent(in) :: z
+real(dp)            :: halo
 
 if(num_images() == 1) then
   candidate = .true.
@@ -629,11 +648,11 @@ if(num_images() == 1) then
 endif
 
 halo = hs%rcut + nb_dcut
-candidate = a%pos(3) >= zlo-halo .and. a%pos(3) < zhi+halo
-if(this_image() == 1) candidate = candidate .and. a%pos(3) >= zlo
-if(this_image() == num_images()) candidate = candidate .or. a%pos(3) == zhi
+candidate = owner_image_for_z(z) == this_image() .or. (z >= zlo-halo .and. z < zhi+halo)
+if(this_image() == 1) candidate = candidate .and. z >= zlo
+if(this_image() == num_images()) candidate = candidate .or. z == zhi
 
-end function candidate_atom
+end function candidate_z
 
 
 integer function owner_image_for_z(z) result(owner)
@@ -652,12 +671,14 @@ end function owner_image_for_z
 
 
 subroutine sync_owned_positions()
-! Replicated-state bridge: each image publishes positions for atoms it owns,
-! then all images refresh their replicated atom coordinates from the owner.
+! Replicated-state bridge: each image publishes positions for atoms it owns.
+! Image 1 refreshes all coordinates for output/serialized corrections; workers
+! refresh only owned atoms and atoms in their candidate halo.
 type(atom_dclist), pointer :: la
 integer                   :: i, owner
 
 call ensure_sync_storage()
+call mark_visible_atoms()
 
 co_pos(:,:) = 0._dp
 la => sys%alist
@@ -671,6 +692,7 @@ sync all
 la => sys%alist
 do i=1,sys%nat
   la => la%next
+  if(.not.atom_visible(i)) cycle
   owner = atom_owner(i)
   la%o%pos(:) = co_pos(:,i)[owner]
 enddo
@@ -682,34 +704,89 @@ call refresh_domain_ownership()
 end subroutine sync_owned_positions
 
 
+subroutine mark_visible_atoms()
+type(atom_dclist), pointer :: la
+integer                   :: i
+
+if(.not.allocated(atom_visible)) return
+
+if(this_image() == 1) then
+  atom_visible(:) = .true.
+  return
+endif
+
+la => sys%alist
+do i=1,sys%nat
+  la => la%next
+  atom_visible(i) = atom_owner(i) == this_image() .or. candidate_atom(la%o)
+enddo
+
+end subroutine mark_visible_atoms
+
+
 subroutine refresh_domain_ownership()
 ! Recompute z-slab ownership from current replicated positions and rebuild the
 ! local focus group consumed by the neighbor view.
 type(atom_dclist), pointer :: la
+integer, allocatable      :: source_owner(:)
 integer                   :: i
-integer                   :: new_owner
+integer                   :: new_owner, published_owner
+real(dp)                  :: published_z
 logical                   :: rebuild_focus
 
-if(.not.allocated(atom_owner)) return
+if(.not.allocated(atom_owner) .or. .not.allocated(co_owner)) return
+
+allocate(source_owner(sys%nat))
+source_owner(:) = atom_owner(:)
 
 rebuild_focus = focus_dirty .or. num_images() > 1
-la => sys%alist
-do i=1,sys%nat
-  la => la%next
-  new_owner = owner_image_for_z(la%o%pos(3))
-  if(atom_owner(i) /= new_owner) rebuild_focus = .true.
-  atom_owner(i) = new_owner
-enddo
+
+if(num_images() == 1) then
+  la => sys%alist
+  do i=1,sys%nat
+    la => la%next
+    new_owner = owner_image_for_z(la%o%pos(3))
+    if(atom_owner(i) /= new_owner) rebuild_focus = .true.
+    atom_owner(i) = new_owner
+  enddo
+else
+  if(this_image() == 1) then
+    la => sys%alist
+    do i=1,sys%nat
+      la => la%next
+      co_owner(i) = owner_image_for_z(la%o%pos(3))
+    enddo
+  endif
+
+  sync all
+
+  do i=1,sys%nat
+    new_owner = co_owner(i)[1]
+    if(atom_owner(i) /= new_owner) rebuild_focus = .true.
+    atom_owner(i) = new_owner
+  enddo
+endif
 
 if(.not.rebuild_focus) return
 
 call hs_focus%detach_all()
 call hs_candidate%detach_all()
 
+if(allocated(atom_visible)) atom_visible(:) = .false.
 la => sys%alist
 do i=1,sys%nat
   la => la%next
-  if(candidate_atom(la%o)) call hs_candidate%attach(la%o)
+  published_owner = source_owner(i)
+  published_z = co_pos(3,i)[published_owner]
+  if(candidate_z(published_z)) then
+    if(allocated(atom_visible)) atom_visible(i) = .true.
+    la%o%pos(:) = co_pos(:,i)[published_owner]
+    call hs_candidate%attach(la%o)
+  endif
+  if(this_image() == 1) then
+    if(allocated(atom_visible)) atom_visible(i) = .true.
+    la%o%pos(:) = co_pos(:,i)[published_owner]
+  endif
   if(la%o%sym /= 'CG' .and. atom_owner(i) == this_image()) call hs_focus%attach(la%o)
 enddo
 
@@ -770,8 +847,8 @@ type(atom_dclist), pointer :: la
 integer, allocatable       :: old_owner(:)
 integer                    :: i, nold
 
-if(allocated(atom_owner) .and. allocated(co_pos)) then
-  if(size(atom_owner) == sys%nat .and. size(co_pos,2) == sys%nat) return
+if(allocated(atom_owner) .and. allocated(co_owner) .and. allocated(atom_visible) .and. allocated(co_pos)) then
+  if(size(atom_owner) == sys%nat .and. size(co_owner) == sys%nat .and. size(atom_visible) == sys%nat .and. size(co_pos,2) == sys%nat) return
 endif
 
 focus_dirty = .true.
@@ -783,13 +860,19 @@ if(allocated(atom_owner)) then
   old_owner(:) = atom_owner(:)
   deallocate(atom_owner)
 endif
+if(allocated(atom_visible)) deallocate(atom_visible)
 
 sync all
+if(allocated(co_owner)) deallocate(co_owner)
 if(allocated(co_pos)) deallocate(co_pos)
 
 allocate(atom_owner(sys%nat))
+allocate(co_owner(sys%nat)[*])
+allocate(atom_visible(sys%nat))
 allocate(co_pos(3,sys%nat)[*])
 co_pos(:,:) = 0._dp
+co_owner(:) = 1
+atom_visible(:) = .true.
 
 atom_owner(:) = 1
 if(nold > 0) atom_owner(:min(nold,sys%nat)) = old_owner(:min(nold,sys%nat))
