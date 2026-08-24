@@ -50,10 +50,12 @@ For GNU Fortran with an explicit runtime library:
     ./configure --enable-coarray=lib --with-coarray-lib=-lcaf_shmem
     make
 
-At this stage multi-image execution is intentionally conservative and uses
-coarray intrinsics directly in `dana.F90`: image 1 runs the simulation and the
-other images wait at the final `sync all`. This validates the runtime path
-before domain decomposition and halo exchange are introduced.
+Multi-image execution uses coarray intrinsics directly in `dana.F90`. The first
+domain-decomposition step splits the simulation box into z-slabs.
+Each image owns the `focus` atoms in its slab, while candidate atoms are still
+replicated. Owned atom positions are synchronized through a full replicated
+coarray buffer after updates. This is a correctness scaffold for neighbor/halo
+work, not the final scalable communication pattern.
 
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.

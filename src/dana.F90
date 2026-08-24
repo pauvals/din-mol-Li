@@ -12,6 +12,7 @@ program dana
   real(dp), parameter :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
   real(dp)            :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp)            :: xi, yi               ! Tamaño en x e y de caja sim.
+  real(dp)            :: zlo[*], zhi[*]       ! Dominio owned por esta imagen
   real(dp), parameter :: gama=1._dp           ! Para fricción
   real(dp)            :: dif, dif_sei, dif_sc ! Difusion
   real(dp), parameter :: Tsist=300._dp        ! T= 300 K
@@ -58,6 +59,8 @@ program dana
   real(dp)            :: sdr,sdv, sdr_sei,sdv_sei, sdr_sc,sdv_sc, skt
   real(dp)            :: crv1,crv2, crv1_sei,crv2_sei, crv1_sc,crv2_sc
   real(dp),allocatable:: ranv(:,:)
+  real(dp),allocatable:: co_pos(:,:)[:]
+  integer,allocatable :: atom_owner(:)
    
   ! GCMC
   logical             :: s_gcmc=.false.
@@ -82,10 +85,10 @@ program dana
   sync all
 
   if (this_image() == 1) then
-
-  open(25,File='version')
-  write(25,*) PACKAGE_VERSION
-  close(25)
+    open(25,File='version')
+    write(25,*) PACKAGE_VERSION
+    close(25)
+  endif
 
   ! Chemical elements used
   call elements_init()
@@ -130,14 +133,17 @@ program dana
 
   ! Configure integrator and reservoir for the run.
   call config_run()
+  call set_domain_bounds()
 
   ! Generar posiciones inic.
-  if (new_sim) call gen_pos_inic()
+  if (new_sim .and. this_image() == 1) call gen_pos_inic()
+  sync all
 
   ! Define tamaño en z del sistema (sin contar el reservorio), y lee posic. inic.
   ! de partículas 
   ! Read initial positions (optionally from a previous run).
   call config_inic()
+  call sync_owned_positions()
 
   ! Add to GCMC
   if(s_gcmc) then
@@ -153,6 +159,7 @@ program dana
   call sync_execution_views()
 
   if (integrador) call fuerza(hs,eps,r0)
+  call sync_owned_positions()
 
   ! Calcula rho - densidad reservorio inicial
   call calc_rho(rho)
@@ -164,12 +171,14 @@ program dana
 
 
   ! Output 
-  open(11,File='Li.xyz')
-  open(12,File='E.dat')
-  open(13,File='T.dat')
-  open(14,File='rho.dat')
-  open(15,File='try.dat')
-  open(16,File='depo.dat')
+  if (this_image() == 1) then
+    open(11,File='Li.xyz')
+    open(12,File='E.dat')
+    open(13,File='T.dat')
+    open(14,File='rho.dat')
+    open(15,File='try.dat')
+    open(16,File='depo.dat')
+  endif
 
   call salida() ! config. inic. en el primer paso ;)
 
@@ -187,10 +196,12 @@ program dana
       ! call knock(hs)
       call fuerza(hs,eps,r0)
       call ermak_b(hs,ranv)
+      call sync_owned_positions()
 
     else
       ! Para usar din. Browniana, y ~esferas duras
       call cbrownian_hs(hs,h)
+      call sync_owned_positions()
 
     endif
 
@@ -199,6 +210,7 @@ program dana
  
     ! Solve overlaps
     call overlap_moveback(hs)
+    call sync_owned_positions()
        
     ! Update neighbors (give error if not used again)
     call sync_execution_views()
@@ -274,10 +286,14 @@ program dana
    
   enddo
  
-  close(11)              
-  close(12)              
-  close(13)
-  close(14)
+  if (this_image() == 1) then
+    close(11)
+    close(12)
+    close(13)
+    close(14)
+    close(15)
+    close(16)
+  endif
 
   
   ! FIN
@@ -301,7 +317,8 @@ program dana
   endif 
  
 !  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
-  call wstd(); write(logunit,'("coarray images: ",i0,"; active simulation image: ",i0)') num_images(), this_image()
+  call wstd(); write(logunit,'("coarray images: ",i0,"; active domain image: ",i0)') num_images(), this_image()
+  call wstd(); write(logunit,'("domain z range: [",f10.3,",",f10.3,")")') zlo, zhi
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplazamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
@@ -312,7 +329,6 @@ program dana
 
 
   call elements%destroy()
-  endif
 
   sync all
 
@@ -498,6 +514,13 @@ open(11,File='pos_inic.xyz')
 read(11,*) n
 read(11,*)
 
+if(allocated(atom_owner)) deallocate(atom_owner)
+if(allocated(co_pos)) deallocate(co_pos)
+allocate(atom_owner(n))
+allocate(co_pos(3,n)[*])
+atom_owner(:)=1
+co_pos(:,:)=0._dp
+
 do i=1,n
 
   ! Allocatea el atomo-como un puntero del tipo 'atom'
@@ -515,10 +538,12 @@ do i=1,n
   ! Agrego atomos a los grupos
   ! NOTA: hs%attach tiene que estar al final
   ! para que ande la lista de vecinos
+  atom_owner(i) = owner_image_for_z(pa%pos(3))
+
   if (pa%sym=='CG') then
     call hs_candidate%attach(pa)
   else
-    call hs_focus%attach(pa)
+    if (owned_atom(pa)) call hs_focus%attach(pa)
     call hs_candidate%attach(pa)
   endif
   call hs%attach(pa)
@@ -559,6 +584,117 @@ if (integrador) then
 endif
 
 end subroutine config_inic
+
+
+subroutine set_domain_bounds()
+! Assign a z-slab to each image. Candidates remain replicated for now; focus
+! atoms are owned by the image whose slab contains their initial position.
+real(dp) :: dz
+
+dz = (zmax-o)/real(num_images(),kind=dp)
+zlo = o + real(this_image()-1,kind=dp)*dz
+if (this_image() == num_images()) then
+  zhi = zmax
+else
+  zhi = zlo + dz
+endif
+sync all
+
+end subroutine set_domain_bounds
+
+
+logical function owned_atom(a) result(owned)
+class(atom),intent(in) :: a
+
+owned = a%pos(3) >= zlo .and. a%pos(3) < zhi
+if (this_image() == num_images()) owned = owned .or. a%pos(3) == zhi
+
+end function owned_atom
+
+
+integer function owner_image_for_z(z) result(owner)
+real(dp),intent(in) :: z
+integer             :: img
+
+owner = num_images()
+do img=1,num_images()
+  if (z >= zlo[img] .and. z < zhi[img]) then
+    owner = img
+    return
+  endif
+enddo
+
+end function owner_image_for_z
+
+
+subroutine sync_owned_positions()
+! Replicated-state bridge: each image publishes positions for atoms it owns,
+! then all images refresh their replicated atom coordinates from the owner.
+type(atom_dclist), pointer :: la
+integer                   :: i, owner
+
+call ensure_sync_storage()
+
+co_pos(:,:) = 0._dp
+la => sys%alist
+do i=1,sys%nat
+  la => la%next
+  if(atom_owner(i) == this_image()) co_pos(:,i) = la%o%pos(:)
+enddo
+
+sync all
+
+la => sys%alist
+do i=1,sys%nat
+  la => la%next
+  owner = atom_owner(i)
+  la%o%pos(:) = co_pos(:,i)[owner]
+enddo
+
+sync all
+
+end subroutine sync_owned_positions
+
+
+subroutine ensure_sync_storage()
+type(atom_dclist), pointer :: la
+integer, allocatable       :: old_owner(:)
+integer                    :: i, nold
+
+if(allocated(atom_owner) .and. allocated(co_pos)) then
+  if(size(atom_owner) == sys%nat .and. size(co_pos,2) == sys%nat) return
+endif
+
+nold = 0
+if(allocated(atom_owner)) then
+  nold = size(atom_owner)
+  allocate(old_owner(nold))
+  old_owner(:) = atom_owner(:)
+  deallocate(atom_owner)
+endif
+
+sync all
+if(allocated(co_pos)) deallocate(co_pos)
+
+allocate(atom_owner(sys%nat))
+allocate(co_pos(3,sys%nat)[*])
+co_pos(:,:) = 0._dp
+
+atom_owner(:) = 1
+if(nold > 0) atom_owner(:min(nold,sys%nat)) = old_owner(:min(nold,sys%nat))
+
+if(sys%nat > nold) then
+  la => sys%alist
+  do i=1,sys%nat
+    la => la%next
+    if(i > nold) atom_owner(i) = owner_image_for_z(la%o%pos(3))
+  enddo
+endif
+
+if(allocated(old_owner)) deallocate(old_owner)
+sync all
+
+end subroutine ensure_sync_storage
 
 
 ! Reservorios
@@ -1195,6 +1331,8 @@ subroutine salida()  ! Escribe los datos calc. :P
 integer  :: j ! Siempre hay que definirlos =O siempre privados
 type(atom_dclist), pointer :: la 
 real(dp) :: energia
+
+if (this_image() /= 1) return
 
 energia= 0._dp
 
