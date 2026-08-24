@@ -48,7 +48,6 @@ program dana
   ! Varios
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros
-  integer             :: co_image, co_images
   integer             :: try, depo    ! Parts. cercanas a electrodo y deposic.
   real(dp)            :: dist, rhomedia, cstdev, factor, factor2
 
@@ -80,16 +79,9 @@ program dana
   call system_clock(count_max=sclock_max)
   call system_clock(sclock_t1)
 
-#ifdef DANA_COARRAY
-  co_image = this_image()
-  co_images = num_images()
   sync all
-#else
-  co_image = 1
-  co_images = 1
-#endif
 
-  if (co_image == 1) then
+  if (this_image() == 1) then
 
   open(25,File='version')
   write(25,*) PACKAGE_VERSION
@@ -309,7 +301,7 @@ program dana
   endif 
  
 !  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
-  call wstd(); write(logunit,'("coarray images: ",i0,"; active simulation image: ",i0)') co_images, co_image
+  call wstd(); write(logunit,'("coarray images: ",i0,"; active simulation image: ",i0)') num_images(), this_image()
   call wstd(); write(logunit,'("vecinos actualizados: ",i0," veces")') nupd_vlist
   call wstd(); write(logunit,'("maximo numero de vecinos en algun paso: ",i0)') nn_vlist
   call wstd(); write(logunit,'("maximo desplazamiento en algun paso: ",e10.3)') sqrt(max_vel)*h
@@ -322,9 +314,7 @@ program dana
   call elements%destroy()
   endif
 
-#ifdef DANA_COARRAY
   sync all
-#endif
 
 
 

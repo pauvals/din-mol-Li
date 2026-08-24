@@ -25,9 +25,9 @@ AC_PROG_FC
 
 AC_ARG_ENABLE([coarray],
   AS_HELP_STRING([--enable-coarray@<:@=single|lib|compiler@:>@],
-                 [enable Fortran coarray runtime support; yes is equivalent to lib]),
+                 [select Fortran coarray runtime support; default is single, yes is equivalent to lib]),
   [enable_coarray="${enableval}"],
-  [enable_coarray=no])
+  [enable_coarray=single])
 
 AC_ARG_WITH([coarray-lib],
   AS_HELP_STRING([--with-coarray-lib=LIBS],
@@ -37,16 +37,13 @@ AC_ARG_WITH([coarray-lib],
 
 COARRAY_FCFLAGS=
 AS_CASE([$enable_coarray],
-  [no], [],
   [yes], [enable_coarray=lib],
   [single], [COARRAY_FCFLAGS="-fcoarray=single"],
   [lib], [COARRAY_FCFLAGS="-fcoarray=lib"],
   [compiler], [],
-  [AC_MSG_ERROR([bad value "${enable_coarray}" for --enable-coarray; use no, single, lib, or compiler])])
+  [AC_MSG_ERROR([bad value "${enable_coarray}" for --enable-coarray; use single, lib, or compiler])])
 
-AS_IF([test "x$enable_coarray" != "xno"], [
-  AC_DEFINE([DANA_COARRAY], [1], [Define to enable Fortran coarray support])
-])
+AC_DEFINE([DANA_COARRAY], [1], [Define to enable Fortran coarray support])
 
 AC_SUBST([COARRAY_FCFLAGS])
 AC_SUBST([COARRAY_LIBS])

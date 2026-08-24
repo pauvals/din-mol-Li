@@ -28,12 +28,13 @@ There are three possible reservoir types to study, and two positions integrators
 
 ### Coarrays
 
-The default build remains serial:
+The HPC branch assumes Fortran coarray support. The default build uses GNU
+Fortran's single-image coarray mode, which is the serial development path:
 
     ./configure
     make
 
-For a compiler-only sanity check with GNU Fortran:
+This is equivalent to:
 
     ./configure --enable-coarray=single
     make
