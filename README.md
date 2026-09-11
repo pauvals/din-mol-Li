@@ -58,6 +58,19 @@ are still synchronized through a full replicated coarray buffer after updates.
 This is a correctness scaffold for neighbor/halo work, not the final scalable
 communication pattern.
 
+For multi-image runs, image 1 also builds a read-only list of unique physical
+overlap pairs before the current serialized correction. Periodic ghosts are
+mapped to their real atoms, pairs are assigned deterministically to the owner
+of the lower global atom index, and the final profile reports local,
+cross-domain, deposition, duplicate, and pair-owner counts. This diagnostic
+does not change the trajectory and is the basis for distributing overlap
+resolution later.
+
+The intended production topology is a Cartesian domain decomposition. The
+next topology to benchmark is an x-y process grid with domains spanning z,
+which distributes the deposition surface across all images. The current
+z-slab mode remains the validation baseline while ownership is generalized.
+
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.
 

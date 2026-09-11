@@ -57,6 +57,13 @@ program dana
   real(dp)            :: prof_overlap=0._dp, prof_output=0._dp
   integer             :: prof_n_integrate=0, prof_n_sync_pos=0, prof_n_sync_views=0
   integer             :: prof_n_overlap=0, prof_n_output=0
+  integer,allocatable :: overlap_gid_lo(:), overlap_gid_hi(:), overlap_pair_owner(:)
+  integer,allocatable :: overlap_pairs_by_owner(:)
+  logical,allocatable :: overlap_cross_domain(:), overlap_deposition_pair(:)
+  integer             :: n_overlap_pairs=0, overlap_conflict_scans=0
+  integer             :: overlap_pair_observations=0, overlap_local_observations=0
+  integer             :: overlap_cross_observations=0, overlap_deposition_observations=0
+  integer             :: overlap_duplicate_observations=0
 
   ! Ermak
   logical             :: ermak 
@@ -383,6 +390,17 @@ call wstd(); write(logunit,'("profile sync_positions: ",f10.3," s calls=",i0)') 
 call wstd(); write(logunit,'("profile sync_neighbors: ",f10.3," s calls=",i0)') prof_sync_views, prof_n_sync_views
 call wstd(); write(logunit,'("profile overlap: ",f10.3," s calls=",i0)') prof_overlap, prof_n_overlap
 call wstd(); write(logunit,'("profile output: ",f10.3," s calls=",i0)') prof_output, prof_n_output
+if(num_images()>1 .and. this_image()==1) then
+  call wstd(); write(logunit,'("overlap conflict list: current=",i0," scans=",i0)') &
+    n_overlap_pairs, overlap_conflict_scans
+  call wstd(); write(logunit,'("overlap conflict observations: total=",i0," local=",i0," cross=",i0, &
+    & " deposition=",i0," duplicates=",i0)') overlap_pair_observations, overlap_local_observations, &
+    overlap_cross_observations, overlap_deposition_observations, overlap_duplicate_observations
+  if(allocated(overlap_pairs_by_owner)) then
+    call wstd(); write(logunit,'("overlap pair-owner observations: min=",i0," max=",i0)') &
+      minval(overlap_pairs_by_owner), maxval(overlap_pairs_by_owner)
+  endif
+endif
 
 end subroutine report_profile
 
@@ -861,6 +879,7 @@ sync all
 if(this_image() == 1) then
   call attach_all_focus_atoms()
   call sync_execution_views()
+  call classify_overlap_pairs(hs)
   call overlap_moveback(hs)
 endif
 
@@ -897,6 +916,109 @@ enddo
 hs%listed = .false.
 
 end subroutine attach_all_focus_atoms
+
+
+subroutine classify_overlap_pairs(g)
+! Build a mutation-free list of unique physical overlaps. Neighbor rows for
+! periodic ghosts are mapped back to their real atom before assigning a pair.
+use gems_groups, only: vdistance
+class(ngroup),intent(in)   :: g
+type(atom_dclist),pointer  :: la
+type(atom),pointer         :: o1, o2
+integer,allocatable        :: row_gid(:)
+integer                   :: i, ii, j, jj, k, gid1, gid2, gid_lo, gid_hi
+integer                   :: max_pairs, pair_owner, real_row
+real(dp)                  :: vd(3), dr
+logical                   :: duplicate_pair
+
+max_pairs=1
+if(allocated(g%focus_id)) then
+  if(size(g%focus_id)>0) max_pairs=max(1,sum(g%nn(g%focus_id)))
+endif
+
+if(allocated(overlap_gid_lo)) deallocate(overlap_gid_lo, overlap_gid_hi, overlap_pair_owner)
+if(allocated(overlap_cross_domain)) deallocate(overlap_cross_domain, overlap_deposition_pair)
+allocate(overlap_gid_lo(max_pairs), overlap_gid_hi(max_pairs), overlap_pair_owner(max_pairs))
+allocate(overlap_cross_domain(max_pairs), overlap_deposition_pair(max_pairs))
+allocate(row_gid(size(g%real_id)))
+row_gid(:)=0
+n_overlap_pairs=0
+
+la => sys%alist
+do k=1,sys%nat
+  la => la%next
+  i=la%o%gid(g)
+  if(i>0) row_gid(i)=k
+enddo
+
+la => g%focus%alist
+do ii=1,g%focus%nat
+  la => la%next
+  o1 => la%o
+  i=o1%gid(g)
+  if(i<1) cycle
+  real_row=g%real_id(i)
+  if(real_row<1 .or. real_row>size(row_gid)) cycle
+  gid1=row_gid(real_row)
+  if(gid1<1) cycle
+
+  do jj=1,g%nn(i)
+    j=g%list(i,jj)
+    o2 => g%a(j)%o
+    if(g%b_limbo) then
+      if(associated(o2,target=g%limbo)) cycle
+    endif
+
+    call vdistance(vd,o1,o2,.true.)
+    dr=dot_product(vd,vd)
+    if(dr>g%rcut2) cycle
+
+    real_row=g%real_id(j)
+    if(real_row<1 .or. real_row>size(row_gid)) cycle
+    gid2=row_gid(real_row)
+    if(gid2<1 .or. gid1==gid2) cycle
+    gid_lo=min(gid1,gid2)
+    gid_hi=max(gid1,gid2)
+
+    duplicate_pair=.false.
+    do k=1,n_overlap_pairs
+      if(overlap_gid_lo(k)==gid_lo .and. overlap_gid_hi(k)==gid_hi) then
+        duplicate_pair=.true.
+        exit
+      endif
+    enddo
+    if(duplicate_pair) then
+      overlap_duplicate_observations=overlap_duplicate_observations+1
+      cycle
+    endif
+
+    n_overlap_pairs=n_overlap_pairs+1
+    pair_owner=atom_owner(gid_lo)
+    overlap_gid_lo(n_overlap_pairs)=gid_lo
+    overlap_gid_hi(n_overlap_pairs)=gid_hi
+    overlap_pair_owner(n_overlap_pairs)=pair_owner
+    overlap_cross_domain(n_overlap_pairs)=atom_owner(gid_lo)/=atom_owner(gid_hi)
+    overlap_deposition_pair(n_overlap_pairs)=o1%z==2 .or. o2%z==2
+  enddo
+enddo
+
+if(.not.allocated(overlap_pairs_by_owner)) then
+  allocate(overlap_pairs_by_owner(num_images()))
+  overlap_pairs_by_owner(:)=0
+endif
+overlap_conflict_scans=overlap_conflict_scans+1
+overlap_pair_observations=overlap_pair_observations+n_overlap_pairs
+overlap_local_observations=overlap_local_observations+count(.not.overlap_cross_domain(:n_overlap_pairs))
+overlap_cross_observations=overlap_cross_observations+count(overlap_cross_domain(:n_overlap_pairs))
+overlap_deposition_observations=overlap_deposition_observations+count(overlap_deposition_pair(:n_overlap_pairs))
+do k=1,n_overlap_pairs
+  pair_owner=overlap_pair_owner(k)
+  overlap_pairs_by_owner(pair_owner)=overlap_pairs_by_owner(pair_owner)+1
+enddo
+
+deallocate(row_gid)
+
+end subroutine classify_overlap_pairs
 
 
 subroutine ensure_sync_storage()
