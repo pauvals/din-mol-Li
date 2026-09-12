@@ -12,7 +12,10 @@ program dana
   real(dp), parameter :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
   real(dp)            :: z0, z1, zmax         ! Para ajuste del reservorio
   real(dp)            :: xi, yi               ! Tamaño en x e y de caja sim.
-  real(dp)            :: zlo[*], zhi[*]       ! Dominio owned por esta imagen
+  real(dp)            :: domain_lo(3)[*], domain_hi(3)[*]
+  real(dp)            :: domain_global_lo(3), domain_global_hi(3)
+  integer             :: domain_dims(3)=[1,1,1], domain_coord(3)=[0,0,0]
+  logical             :: domain_periodic(3)=[.true.,.true.,.false.]
   real(dp), parameter :: gama=1._dp           ! Para fricción
   real(dp)            :: dif, dif_sei, dif_sc ! Difusion
   real(dp), parameter :: Tsist=300._dp        ! T= 300 K
@@ -339,7 +342,11 @@ program dana
  
 !  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
   call wstd(); write(logunit,'("coarray images: ",i0,"; active domain image: ",i0)') num_images(), this_image()
-  call wstd(); write(logunit,'("domain z range: [",f10.3,",",f10.3,")")') zlo, zhi
+  call wstd(); write(logunit,'("domain grid: ",i0," x ",i0," x ",i0,"; coordinates: ",i0,",",i0,",",i0)') &
+    domain_dims, domain_coord
+  call wstd(); write(logunit,'("domain x range: [",f10.3,",",f10.3,")")') domain_lo(1), domain_hi(1)
+  call wstd(); write(logunit,'("domain y range: [",f10.3,",",f10.3,")")') domain_lo(2), domain_hi(2)
+  call wstd(); write(logunit,'("domain z range: [",f10.3,",",f10.3,")")') domain_lo(3), domain_hi(3)
   call wstd(); write(logunit,'("domain atoms: focus=",i0," candidate=",i0)') hs_focus%nat, hs_candidate%nat
   if(allocated(atom_visible)) then
     call wstd(); write(logunit,'("domain sync visible atoms: ",i0)') count(atom_visible)
@@ -620,7 +627,7 @@ do i=1,n
   ! Agrego atomos a los grupos
   ! NOTA: hs%attach tiene que estar al final
   ! para que ande la lista de vecinos
-  atom_owner(i) = owner_image_for_z(pa%pos(3))
+  atom_owner(i) = owner_image_for_position(pa%pos)
 
   if (candidate_atom(pa)) call hs_candidate%attach(pa)
   if (pa%sym/='CG') then
@@ -667,27 +674,56 @@ end subroutine config_inic
 
 
 subroutine set_domain_bounds()
-! Assign a z-slab to each image. Candidates remain replicated for now; focus
-! atoms are owned by the image whose slab contains their initial position.
-real(dp) :: dz
+! Cartesian domain metadata. Keep z slabs as the validation topology while
+! ownership and halo predicates are generalized for later x-y columns.
+real(dp) :: width
+integer  :: axis
 
-dz = (zmax-o)/real(num_images(),kind=dp)
-zlo = o + real(this_image()-1,kind=dp)*dz
-if (this_image() == num_images()) then
-  zhi = zmax
-else
-  zhi = zlo + dz
-endif
+domain_dims=[1,1,num_images()]
+call image_coordinates(this_image(),domain_coord)
+domain_global_lo=[o,o,o]
+domain_global_hi=[xi,yi,zmax]
+
+do axis=1,3
+  width=(domain_global_hi(axis)-domain_global_lo(axis))/real(domain_dims(axis),kind=dp)
+  domain_lo(axis)=domain_global_lo(axis)+real(domain_coord(axis),kind=dp)*width
+  if(domain_coord(axis)==domain_dims(axis)-1) then
+    domain_hi(axis)=domain_global_hi(axis)
+  else
+    domain_hi(axis)=domain_lo(axis)+width
+  endif
+enddo
 sync all
 
 end subroutine set_domain_bounds
 
 
+subroutine image_coordinates(image,coord)
+integer,intent(in)  :: image
+integer,intent(out) :: coord(3)
+integer             :: rank
+
+rank=image-1
+coord(1)=mod(rank,domain_dims(1))
+rank=rank/domain_dims(1)
+coord(2)=mod(rank,domain_dims(2))
+coord(3)=rank/domain_dims(2)
+
+end subroutine image_coordinates
+
+
+integer function image_from_coordinates(coord) result(image)
+integer,intent(in) :: coord(3)
+
+image=1+coord(1)+domain_dims(1)*(coord(2)+domain_dims(2)*coord(3))
+
+end function image_from_coordinates
+
+
 logical function owned_atom(a) result(owned)
 class(atom),intent(in) :: a
 
-owned = a%pos(3) >= zlo .and. a%pos(3) < zhi
-if (this_image() == num_images()) owned = owned .or. a%pos(3) == zhi
+owned=owner_image_for_position(a%pos)==this_image()
 
 end function owned_atom
 
@@ -695,14 +731,15 @@ end function owned_atom
 logical function candidate_atom(a) result(candidate)
 class(atom),intent(in) :: a
 
-candidate = candidate_z(a%pos(3))
+candidate=candidate_position(a%pos)
 
 end function candidate_atom
 
 
-logical function candidate_z(z) result(candidate)
-real(dp),intent(in) :: z
+logical function candidate_position(r) result(candidate)
+real(dp),intent(in) :: r(3)
 real(dp)            :: halo
+integer             :: axis
 
 if(num_images() == 1) then
   candidate = .true.
@@ -710,26 +747,83 @@ if(num_images() == 1) then
 endif
 
 halo = hs%rcut + nb_dcut
-candidate = owner_image_for_z(z) == this_image() .or. (z >= zlo-halo .and. z < zhi+halo)
-if(this_image() == 1) candidate = candidate .and. z >= zlo
-if(this_image() == num_images()) candidate = candidate .or. z == zhi
+candidate=owner_image_for_position(r)==this_image()
+if(candidate) return
 
-end function candidate_z
-
-
-integer function owner_image_for_z(z) result(owner)
-real(dp),intent(in) :: z
-integer             :: img
-
-owner = num_images()
-do img=1,num_images()
-  if (z >= zlo[img] .and. z < zhi[img]) then
-    owner = img
+candidate=.true.
+do axis=1,3
+  if(.not.coordinate_in_domain_halo(r(axis),axis,halo)) then
+    candidate=.false.
     return
   endif
 enddo
 
-end function owner_image_for_z
+end function candidate_position
+
+
+logical function coordinate_in_domain_halo(value,axis,halo) result(visible)
+real(dp),intent(in) :: value, halo
+integer,intent(in)  :: axis
+real(dp)            :: coordinate, length
+
+visible=.true.
+if(domain_dims(axis)==1) return
+
+coordinate=value
+length=global_domain_length(axis)
+if(domain_periodic(axis)) coordinate=modulo(coordinate-domain_global_lo(axis),length)+domain_global_lo(axis)
+
+visible=coordinate>=domain_lo(axis)-halo .and. coordinate<domain_hi(axis)+halo
+if(visible .or. .not.domain_periodic(axis)) return
+visible=coordinate+length>=domain_lo(axis)-halo .and. coordinate+length<domain_hi(axis)+halo
+if(visible) return
+visible=coordinate-length>=domain_lo(axis)-halo .and. coordinate-length<domain_hi(axis)+halo
+
+end function coordinate_in_domain_halo
+
+
+integer function owner_image_for_position(r) result(owner)
+real(dp),intent(in) :: r(3)
+integer             :: axis, coord(3), c
+real(dp)            :: coordinate, lower, length, width
+
+do axis=1,3
+  lower=domain_global_lo(axis)
+  length=global_domain_length(axis)
+  coordinate=r(axis)
+  if(domain_periodic(axis)) coordinate=modulo(coordinate-lower,length)+lower
+
+  coord(axis)=domain_dims(axis)-1
+  width=length/real(domain_dims(axis),kind=dp)
+  do c=0,domain_dims(axis)-1
+    if(coordinate>=lower+real(c,kind=dp)*width .and. &
+      coordinate<lower+real(c+1,kind=dp)*width) then
+      coord(axis)=c
+      exit
+    endif
+  enddo
+enddo
+
+owner=image_from_coordinates(coord)
+
+end function owner_image_for_position
+
+
+real(dp) function global_domain_length(axis) result(length)
+integer,intent(in) :: axis
+
+select case(axis)
+case(1)
+  length=domain_global_hi(1)-domain_global_lo(1)
+case(2)
+  length=domain_global_hi(2)-domain_global_lo(2)
+case(3)
+  length=domain_global_hi(3)-domain_global_lo(3)
+case default
+  length=0._dp
+end select
+
+end function global_domain_length
 
 
 subroutine sync_owned_positions()
@@ -789,13 +883,13 @@ end subroutine mark_visible_atoms
 
 
 subroutine refresh_domain_ownership()
-! Recompute z-slab ownership from current replicated positions and rebuild the
-! local focus group consumed by the neighbor view.
+! Recompute Cartesian ownership from current replicated positions and rebuild
+! the local focus group consumed by the neighbor view.
 type(atom_dclist), pointer :: la
 integer, allocatable      :: source_owner(:)
 integer                   :: i
 integer                   :: new_owner, published_owner
-real(dp)                  :: published_z
+real(dp)                  :: published_pos(3)
 logical                   :: rebuild_focus
 
 if(.not.allocated(atom_owner) .or. .not.allocated(co_owner)) return
@@ -809,7 +903,7 @@ if(num_images() == 1) then
   la => sys%alist
   do i=1,sys%nat
     la => la%next
-    new_owner = owner_image_for_z(la%o%pos(3))
+    new_owner = owner_image_for_position(la%o%pos)
     if(atom_owner(i) /= new_owner) rebuild_focus = .true.
     atom_owner(i) = new_owner
   enddo
@@ -818,7 +912,7 @@ else
     la => sys%alist
     do i=1,sys%nat
       la => la%next
-      co_owner(i) = owner_image_for_z(la%o%pos(3))
+      co_owner(i) = owner_image_for_position(la%o%pos)
     enddo
   endif
 
@@ -841,8 +935,8 @@ la => sys%alist
 do i=1,sys%nat
   la => la%next
   published_owner = source_owner(i)
-  published_z = co_pos(3,i)[published_owner]
-  if(candidate_z(published_z)) then
+  published_pos = co_pos(:,i)[published_owner]
+  if(candidate_position(published_pos)) then
     if(allocated(atom_visible)) atom_visible(i) = .true.
     la%o%pos(:) = co_pos(:,i)[published_owner]
     call hs_candidate%attach(la%o)
@@ -1060,7 +1154,7 @@ if(sys%nat > nold) then
   la => sys%alist
   do i=1,sys%nat
     la => la%next
-    if(i > nold) atom_owner(i) = owner_image_for_z(la%o%pos(3))
+    if(i > nold) atom_owner(i) = owner_image_for_position(la%o%pos)
   enddo
 endif
 

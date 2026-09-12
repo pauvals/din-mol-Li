@@ -50,8 +50,10 @@ For GNU Fortran with an explicit runtime library:
     ./configure --enable-coarray=lib --with-coarray-lib=-lcaf_shmem
     make
 
-Multi-image execution uses coarray intrinsics directly in `dana.F90`. The first
-domain-decomposition step splits the simulation box into z-slabs.
+Multi-image execution uses coarray intrinsics directly in `dana.F90`. Domain
+ownership is represented by a three-dimensional Cartesian image grid. The
+current validation topology is `[1,1,num_images()]`, which splits the box into
+z-slabs.
 Each image owns the `focus` atoms in its slab and keeps neighbor candidates from
 its owned slab plus a z-halo of width `hs%rcut + nb_dcut`. Owned atom positions
 are still synchronized through a full replicated coarray buffer after updates.
@@ -66,10 +68,9 @@ cross-domain, deposition, duplicate, and pair-owner counts. This diagnostic
 does not change the trajectory and is the basis for distributing overlap
 resolution later.
 
-The intended production topology is a Cartesian domain decomposition. The
-next topology to benchmark is an x-y process grid with domains spanning z,
+The next topology to benchmark is an x-y process grid with domains spanning z,
 which distributes the deposition surface across all images. The current
-z-slab mode remains the validation baseline while ownership is generalized.
+z-slab mode remains the byte-equivalent validation baseline.
 
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.
