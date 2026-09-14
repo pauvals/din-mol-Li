@@ -1005,7 +1005,10 @@ else
   enddo
 endif
 
-if(.not.rebuild_focus) return
+if(.not.rebuild_focus) then
+  deallocate(source_owner)
+  return
+endif
 
 call hs_focus%detach_all()
 call hs_candidate%detach_all()
@@ -1044,6 +1047,8 @@ enddo
 
 hs%listed = .false.
 focus_dirty = .false.
+
+deallocate(source_owner)
 sync all
 
 end subroutine refresh_domain_ownership
