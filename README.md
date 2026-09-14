@@ -72,6 +72,22 @@ The next topology to benchmark is an x-y process grid with domains spanning z,
 which distributes the deposition surface across all images. The current
 z-slab mode remains the byte-equivalent validation baseline.
 
+Select x-y columns at runtime with:
+
+    DANA_DOMAIN_TOPOLOGY=xy GFORTRAN_NUM_IMAGES=4 ./dana
+
+The image grid is factored automatically according to the lateral box aspect
+ratio. Omitting `DANA_DOMAIN_TOPOLOGY` keeps z slabs.
+
+Multi-image overlap correction uses bounded synchronized rounds. Each image
+detects conflicts involving its owned focus atoms, chooses a rollback target
+from the displacement since the start of the step, applies changes only to
+owned atoms, and then exchanges state before checking residual overlaps. A
+conflict with no remaining displacement is reported as residual instead of
+causing unbounded recursion. The current implementation deliberately exchanges
+a full replicated state and is a correctness baseline, not yet the final
+communication pattern.
+
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.
 

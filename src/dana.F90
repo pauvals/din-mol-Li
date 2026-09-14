@@ -16,6 +16,7 @@ program dana
   real(dp)            :: domain_global_lo(3), domain_global_hi(3)
   integer             :: domain_dims(3)=[1,1,1], domain_coord(3)=[0,0,0]
   logical             :: domain_periodic(3)=[.true.,.true.,.false.]
+  character(8)        :: domain_topology='z'
   real(dp), parameter :: gama=1._dp           ! Para fricción
   real(dp)            :: dif, dif_sei, dif_sc ! Difusion
   real(dp), parameter :: Tsist=300._dp        ! T= 300 K
@@ -76,10 +77,15 @@ program dana
   real(dp)            :: crv1,crv2, crv1_sei,crv2_sei, crv1_sc,crv2_sc
   real(dp),allocatable:: ranv(:,:)
   real(dp),allocatable:: co_pos(:,:)[:]
+  real(dp),allocatable:: co_old_cg(:,:)[:], co_pos_old(:,:)[:]
+  real(dp),allocatable:: co_vel(:,:)[:], co_acel(:,:)[:], co_force(:,:)[:]
   integer,allocatable :: atom_owner(:)
-  integer,allocatable :: co_owner(:)[:]
-  logical,allocatable :: atom_visible(:)
+  integer,allocatable :: co_owner(:)[:], co_element(:)[:]
+  logical,allocatable :: atom_visible(:), co_skip(:)[:]
   logical             :: focus_dirty = .false.
+  integer             :: overlap_round_actions[*]=0, overlap_round_unresolved[*]=0
+  integer             :: output_try[*]=0, output_depo[*]=0
+  integer             :: overlap_parallel_rounds=0, overlap_parallel_residuals=0
    
   ! GCMC
   logical             :: s_gcmc=.false.
@@ -342,8 +348,8 @@ program dana
  
 !  call wstd(); write(logunit,*) 'with ',rupdate,' neighbour list updates'
   call wstd(); write(logunit,'("coarray images: ",i0,"; active domain image: ",i0)') num_images(), this_image()
-  call wstd(); write(logunit,'("domain grid: ",i0," x ",i0," x ",i0,"; coordinates: ",i0,",",i0,",",i0)') &
-    domain_dims, domain_coord
+  call wstd(); write(logunit,'("domain topology: ",a,"; grid: ",i0," x ",i0," x ",i0, &
+    & "; coordinates: ",i0,",",i0,",",i0)') trim(domain_topology), domain_dims, domain_coord
   call wstd(); write(logunit,'("domain x range: [",f10.3,",",f10.3,")")') domain_lo(1), domain_hi(1)
   call wstd(); write(logunit,'("domain y range: [",f10.3,",",f10.3,")")') domain_lo(2), domain_hi(2)
   call wstd(); write(logunit,'("domain z range: [",f10.3,",",f10.3,")")') domain_lo(3), domain_hi(3)
@@ -392,20 +398,24 @@ end subroutine prof_stop
 
 subroutine report_profile()
 
-call wstd(); write(logunit,'("profile integrate: ",f10.3," s calls=",i0)') prof_integrate, prof_n_integrate
-call wstd(); write(logunit,'("profile sync_positions: ",f10.3," s calls=",i0)') prof_sync_pos, prof_n_sync_pos
-call wstd(); write(logunit,'("profile sync_neighbors: ",f10.3," s calls=",i0)') prof_sync_views, prof_n_sync_views
-call wstd(); write(logunit,'("profile overlap: ",f10.3," s calls=",i0)') prof_overlap, prof_n_overlap
-call wstd(); write(logunit,'("profile output: ",f10.3," s calls=",i0)') prof_output, prof_n_output
+  call wstd(); write(logunit,'("profile integrate: ",f10.3," s calls=",i0)') prof_integrate, prof_n_integrate
+  call wstd(); write(logunit,'("profile sync_positions: ",f10.3," s calls=",i0)') prof_sync_pos, prof_n_sync_pos
+  call wstd(); write(logunit,'("profile sync_neighbors: ",f10.3," s calls=",i0)') prof_sync_views, prof_n_sync_views
+  call wstd(); write(logunit,'("profile overlap: ",f10.3," s calls=",i0)') prof_overlap, prof_n_overlap
+  call wstd(); write(logunit,'("profile output: ",f10.3," s calls=",i0)') prof_output, prof_n_output
 if(num_images()>1 .and. this_image()==1) then
-  call wstd(); write(logunit,'("overlap conflict list: current=",i0," scans=",i0)') &
-    n_overlap_pairs, overlap_conflict_scans
-  call wstd(); write(logunit,'("overlap conflict observations: total=",i0," local=",i0," cross=",i0, &
-    & " deposition=",i0," duplicates=",i0)') overlap_pair_observations, overlap_local_observations, &
-    overlap_cross_observations, overlap_deposition_observations, overlap_duplicate_observations
-  if(allocated(overlap_pairs_by_owner)) then
-    call wstd(); write(logunit,'("overlap pair-owner observations: min=",i0," max=",i0)') &
-      minval(overlap_pairs_by_owner), maxval(overlap_pairs_by_owner)
+  call wstd(); write(logunit,'("parallel overlap rounds: ",i0,"; residual observations: ",i0)') &
+    overlap_parallel_rounds, overlap_parallel_residuals
+  if(overlap_conflict_scans>0) then
+    call wstd(); write(logunit,'("overlap conflict list: current=",i0," scans=",i0)') &
+      n_overlap_pairs, overlap_conflict_scans
+    call wstd(); write(logunit,'("overlap conflict observations: total=",i0," local=",i0," cross=",i0, &
+      & " deposition=",i0," duplicates=",i0)') overlap_pair_observations, overlap_local_observations, &
+      overlap_cross_observations, overlap_deposition_observations, overlap_duplicate_observations
+    if(allocated(overlap_pairs_by_owner)) then
+      call wstd(); write(logunit,'("overlap pair-owner observations: min=",i0," max=",i0)') &
+        minval(overlap_pairs_by_owner), maxval(overlap_pairs_by_owner)
+    endif
   endif
 endif
 
@@ -598,16 +608,34 @@ read(11,*)
 
 if(allocated(atom_owner)) deallocate(atom_owner)
 if(allocated(co_owner)) deallocate(co_owner)
+if(allocated(co_element)) deallocate(co_element)
 if(allocated(atom_visible)) deallocate(atom_visible)
+if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
+if(allocated(co_old_cg)) deallocate(co_old_cg)
+if(allocated(co_pos_old)) deallocate(co_pos_old)
+if(allocated(co_vel)) deallocate(co_vel)
+if(allocated(co_acel)) deallocate(co_acel)
+if(allocated(co_force)) deallocate(co_force)
 allocate(atom_owner(n))
 allocate(co_owner(n)[*])
+allocate(co_element(n)[*])
 allocate(atom_visible(n))
+allocate(co_skip(n)[*])
 allocate(co_pos(3,n)[*])
+allocate(co_old_cg(3,n)[*],co_pos_old(3,n)[*])
+allocate(co_vel(3,n)[*],co_acel(3,n)[*],co_force(3,n)[*])
   atom_owner(:)=1
   co_owner(:)=1
+  co_element(:)=119
   atom_visible(:)=.true.
+  co_skip(:)=.false.
   co_pos(:,:)=0._dp
+  co_old_cg(:,:)=0._dp
+  co_pos_old(:,:)=0._dp
+  co_vel(:,:)=0._dp
+  co_acel(:,:)=0._dp
+  co_force(:,:)=0._dp
   focus_dirty=.true.
 
 do i=1,n
@@ -679,7 +707,7 @@ subroutine set_domain_bounds()
 real(dp) :: width
 integer  :: axis
 
-domain_dims=[1,1,num_images()]
+call select_domain_grid()
 call image_coordinates(this_image(),domain_coord)
 domain_global_lo=[o,o,o]
 domain_global_hi=[xi,yi,zmax]
@@ -696,6 +724,37 @@ enddo
 sync all
 
 end subroutine set_domain_bounds
+
+
+subroutine select_domain_grid()
+use gems_errors, only: werr
+integer  :: candidate_x, candidate_y, best_x, status
+real(dp) :: aspect_error, best_error
+
+call get_environment_variable('DANA_DOMAIN_TOPOLOGY',domain_topology,status=status)
+if(status/=0 .or. len_trim(domain_topology)==0) domain_topology='z'
+
+select case(trim(domain_topology))
+case('z')
+  domain_dims=[1,1,num_images()]
+case('xy')
+  best_x=1
+  best_error=huge(best_error)
+  do candidate_x=1,num_images()
+    if(mod(num_images(),candidate_x)/=0) cycle
+    candidate_y=num_images()/candidate_x
+    aspect_error=abs(log((xi/real(candidate_x,dp))/(yi/real(candidate_y,dp))))
+    if(aspect_error<best_error) then
+      best_error=aspect_error
+      best_x=candidate_x
+    endif
+  enddo
+  domain_dims=[best_x,num_images()/best_x,1]
+case default
+  call werr('DANA_DOMAIN_TOPOLOGY must be z or xy',.true.)
+end select
+
+end subroutine select_domain_grid
 
 
 subroutine image_coordinates(image,coord)
@@ -827,9 +886,8 @@ end function global_domain_length
 
 
 subroutine sync_owned_positions()
-! Replicated-state bridge: each image publishes positions for atoms it owns.
-! Image 1 refreshes all coordinates for output/serialized corrections; workers
-! refresh only owned atoms and atoms in their candidate halo.
+! Replicated-state bridge: each owner publishes the atom state needed by a new
+! owner after migration and by halo consumers during overlap correction.
 type(atom_dclist), pointer :: la
 integer                   :: i, owner
 
@@ -838,10 +896,25 @@ call ensure_sync_storage()
 call mark_visible_atoms()
 
 co_pos(:,:) = 0._dp
+co_old_cg(:,:) = 0._dp
+co_pos_old(:,:) = 0._dp
+co_vel(:,:) = 0._dp
+co_acel(:,:) = 0._dp
+co_force(:,:) = 0._dp
+co_element(:) = 119
+co_skip(:) = .false.
 la => sys%alist
 do i=1,sys%nat
   la => la%next
-  if(atom_owner(i) == this_image()) co_pos(:,i) = la%o%pos(:)
+  if(atom_owner(i) /= this_image()) cycle
+  co_pos(:,i) = la%o%pos(:)
+  co_old_cg(:,i) = la%o%old_cg(:)
+  co_pos_old(:,i) = la%o%pos_old(:)
+  co_vel(:,i) = la%o%vel(:)
+  co_acel(:,i) = la%o%acel(:)
+  co_force(:,i) = la%o%force(:)
+  co_element(i) = la%o%z
+  co_skip(i) = la%o%skip
 enddo
 
 sync all
@@ -851,7 +924,14 @@ do i=1,sys%nat
   la => la%next
   if(.not.atom_visible(i)) cycle
   owner = atom_owner(i)
+  if(la%o%z /= co_element(i)[owner]) call la%o%setz(co_element(i)[owner])
   la%o%pos(:) = co_pos(:,i)[owner]
+  la%o%old_cg(:) = co_old_cg(:,i)[owner]
+  la%o%pos_old(:) = co_pos_old(:,i)[owner]
+  la%o%vel(:) = co_vel(:,i)[owner]
+  la%o%acel(:) = co_acel(:,i)[owner]
+  la%o%force(:) = co_force(:,i)[owner]
+  la%o%skip = co_skip(i)[owner]
 enddo
 
 sync all
@@ -938,12 +1018,26 @@ do i=1,sys%nat
   published_pos = co_pos(:,i)[published_owner]
   if(candidate_position(published_pos)) then
     if(allocated(atom_visible)) atom_visible(i) = .true.
+    if(la%o%z /= co_element(i)[published_owner]) call la%o%setz(co_element(i)[published_owner])
     la%o%pos(:) = co_pos(:,i)[published_owner]
+    la%o%old_cg(:) = co_old_cg(:,i)[published_owner]
+    la%o%pos_old(:) = co_pos_old(:,i)[published_owner]
+    la%o%vel(:) = co_vel(:,i)[published_owner]
+    la%o%acel(:) = co_acel(:,i)[published_owner]
+    la%o%force(:) = co_force(:,i)[published_owner]
+    la%o%skip = co_skip(i)[published_owner]
     call hs_candidate%attach(la%o)
   endif
   if(this_image() == 1) then
     if(allocated(atom_visible)) atom_visible(i) = .true.
+    if(la%o%z /= co_element(i)[published_owner]) call la%o%setz(co_element(i)[published_owner])
     la%o%pos(:) = co_pos(:,i)[published_owner]
+    la%o%old_cg(:) = co_old_cg(:,i)[published_owner]
+    la%o%pos_old(:) = co_pos_old(:,i)[published_owner]
+    la%o%vel(:) = co_vel(:,i)[published_owner]
+    la%o%acel(:) = co_acel(:,i)[published_owner]
+    la%o%force(:) = co_force(:,i)[published_owner]
+    la%o%skip = co_skip(i)[published_owner]
   endif
   if(la%o%sym /= 'CG' .and. atom_owner(i) == this_image()) call hs_focus%attach(la%o)
 enddo
@@ -956,10 +1050,8 @@ end subroutine refresh_domain_ownership
 
 
 subroutine solve_overlaps_domain()
-! The current hard-sphere overlap correction is not domain-local: resolving a
-! pair can move atoms that belong to different z slabs. Until halo ownership is
-! explicit, run this correction on image 1 and broadcast the corrected
-! positions back through the replicated-state bridge.
+! Preserve the historical recursive solver in serial. Multiple images use
+! bounded rounds in which each image can mutate only the atoms it owns.
 call prof_start(prof_overlap_tick)
 if(num_images() == 1) then
   call overlap_moveback(hs)
@@ -968,17 +1060,7 @@ if(num_images() == 1) then
   return
 endif
 
-sync all
-
-if(this_image() == 1) then
-  call attach_all_focus_atoms()
-  call sync_execution_views()
-  call classify_overlap_pairs(hs)
-  call overlap_moveback(hs)
-endif
-
-if(allocated(atom_owner)) atom_owner(:) = 1
-call sync_owned_positions()
+call solve_overlaps_parallel(hs)
 call prof_stop(prof_overlap_tick, prof_overlap, prof_n_overlap)
 
 end subroutine solve_overlaps_domain
@@ -1010,6 +1092,181 @@ enddo
 hs%listed = .false.
 
 end subroutine attach_all_focus_atoms
+
+
+subroutine solve_overlaps_parallel(g)
+use gems_errors, only: werr
+class(ngroup),intent(inout) :: g
+logical,allocatable         :: rollback(:), deposition_contact(:)
+integer                     :: round, img, local_actions, total_actions
+integer                     :: local_unresolved, total_unresolved
+
+allocate(rollback(sys%nat),deposition_contact(sys%nat))
+total_actions=0
+total_unresolved=0
+
+do round=1,max(1,sys%nat)
+  call sync_execution_views()
+  call plan_overlap_round(g,rollback,deposition_contact,local_unresolved)
+  call apply_overlap_round(rollback,deposition_contact,local_actions)
+
+  overlap_round_actions=local_actions
+  overlap_round_unresolved=local_unresolved
+  sync all
+
+  total_actions=0
+  total_unresolved=0
+  do img=1,num_images()
+    total_actions=total_actions+overlap_round_actions[img]
+    total_unresolved=total_unresolved+overlap_round_unresolved[img]
+  enddo
+
+  overlap_parallel_rounds=overlap_parallel_rounds+1
+  if(total_actions==0) exit
+  call sync_owned_positions()
+enddo
+
+call werr('Bounded parallel overlap solver did not converge',total_actions>0)
+overlap_parallel_residuals=overlap_parallel_residuals+total_unresolved
+choques3=choques3+local_unresolved
+deallocate(rollback,deposition_contact)
+
+end subroutine solve_overlaps_parallel
+
+
+subroutine plan_overlap_round(g,rollback,deposition_contact,unresolved)
+use gems_groups, only: vdistance
+class(ngroup),intent(in)  :: g
+logical,intent(out)       :: rollback(:), deposition_contact(:)
+integer,intent(out)       :: unresolved
+type(atom_dclist),pointer :: la
+type(atom),pointer        :: o1, o2, o2_image
+integer,allocatable       :: row_gid(:)
+integer                   :: i, ii, j, jj, k, gid1, gid2, real_row, target_gid
+real(dp)                  :: vd(3), dr, moved1, moved2, scale
+logical                   :: movable1, movable2
+
+rollback(:)=.false.
+deposition_contact(:)=.false.
+unresolved=0
+allocate(row_gid(size(g%real_id)))
+row_gid(:)=0
+
+la=>sys%alist
+do k=1,sys%nat
+  la=>la%next
+  i=la%o%gid(g)
+  if(i>0) row_gid(i)=k
+enddo
+
+la=>g%focus%alist
+do ii=1,g%focus%nat
+  la=>la%next
+  o1=>la%o
+  i=o1%gid(g)
+  if(i<1) cycle
+  real_row=g%real_id(i)
+  if(real_row<1 .or. real_row>size(row_gid)) cycle
+  gid1=row_gid(real_row)
+  if(gid1<1) cycle
+
+  do jj=1,g%nn(i)
+    j=g%list(i,jj)
+    o2_image=>g%a(j)%o
+    if(g%b_limbo) then
+      if(associated(o2_image,target=g%limbo)) cycle
+    endif
+    call vdistance(vd,o1,o2_image,.true.)
+    dr=dot_product(vd,vd)
+    if(dr>g%rcut2) cycle
+
+    real_row=g%real_id(j)
+    if(real_row<1 .or. real_row>size(row_gid)) cycle
+    gid2=row_gid(real_row)
+    if(gid2<1 .or. gid1==gid2) cycle
+    if(associated(o2_image%prime)) then
+      o2=>o2_image%prime
+    else
+      o2=>o2_image
+    endif
+
+    if(o2%z==2) then
+      if(o1%z==1) deposition_contact(gid1)=.true.
+      cycle
+    endif
+
+    moved1=dot_product(o1%pos-o1%old_cg,o1%pos-o1%old_cg)
+    moved2=dot_product(o2%pos-o2%old_cg,o2%pos-o2%old_cg)
+    scale=max(1._dp,dot_product(o1%pos,o1%pos),dot_product(o2%pos,o2%pos))
+    movable1=o1%z==1 .and. moved1>epsilon(scale)*scale
+    movable2=o2%z==1 .and. moved2>epsilon(scale)*scale
+
+    target_gid=0
+    if(movable1 .and. .not.movable2) then
+      target_gid=gid1
+    elseif(movable2 .and. .not.movable1) then
+      target_gid=gid2
+    elseif(movable1 .and. movable2) then
+      if(moved1>moved2) then
+        target_gid=gid1
+      elseif(moved2>moved1) then
+        target_gid=gid2
+      else
+        target_gid=max(gid1,gid2)
+      endif
+    endif
+
+    if(target_gid==gid1) then
+      rollback(gid1)=.true.
+    elseif(target_gid==0 .and. gid1<gid2) then
+      unresolved=unresolved+1
+    endif
+  enddo
+enddo
+
+deallocate(row_gid)
+
+end subroutine plan_overlap_round
+
+
+subroutine apply_overlap_round(rollback,deposition_contact,actions)
+logical,intent(in)        :: rollback(:), deposition_contact(:)
+integer,intent(out)       :: actions
+type(atom_dclist),pointer :: la
+type(atom),pointer        :: a
+integer                   :: gid
+logical                   :: do_rollback
+
+actions=0
+la=>sys%alist
+do gid=1,sys%nat
+  la=>la%next
+  if(atom_owner(gid)/=this_image()) cycle
+  a=>la%o
+  do_rollback=rollback(gid)
+
+  if(deposition_contact(gid) .and. a%z==1) then
+    try=try+1
+    if(ran(idum)<prob) then
+      depo=depo+1
+      call a%setz(3)
+      do_rollback=.false.
+      actions=actions+1
+    else
+      do_rollback=.true.
+    endif
+  endif
+
+  if(.not.do_rollback) cycle
+  a%pos(:)=a%old_cg(:)
+  a%acel(:)=0._dp
+  a%vel(:)=0._dp
+  a%skip=.false.
+  choques=choques+1
+  actions=actions+1
+enddo
+
+end subroutine apply_overlap_round
 
 
 subroutine classify_overlap_pairs(g)
@@ -1120,8 +1377,12 @@ type(atom_dclist), pointer :: la
 integer, allocatable       :: old_owner(:)
 integer                    :: i, nold
 
-if(allocated(atom_owner) .and. allocated(co_owner) .and. allocated(atom_visible) .and. allocated(co_pos)) then
-  if(size(atom_owner) == sys%nat .and. size(co_owner) == sys%nat .and. size(atom_visible) == sys%nat .and. size(co_pos,2) == sys%nat) return
+if(allocated(atom_owner) .and. allocated(co_owner) .and. allocated(co_element) .and. &
+  allocated(atom_visible) .and. allocated(co_skip) .and. allocated(co_pos) .and. &
+  allocated(co_old_cg) .and. allocated(co_pos_old) .and. allocated(co_vel) .and. &
+  allocated(co_acel) .and. allocated(co_force)) then
+  if(size(atom_owner) == sys%nat .and. size(co_owner) == sys%nat .and. &
+    size(atom_visible) == sys%nat .and. size(co_pos,2) == sys%nat) return
 endif
 
 focus_dirty = .true.
@@ -1137,14 +1398,32 @@ if(allocated(atom_visible)) deallocate(atom_visible)
 
 sync all
 if(allocated(co_owner)) deallocate(co_owner)
+if(allocated(co_element)) deallocate(co_element)
+if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
+if(allocated(co_old_cg)) deallocate(co_old_cg)
+if(allocated(co_pos_old)) deallocate(co_pos_old)
+if(allocated(co_vel)) deallocate(co_vel)
+if(allocated(co_acel)) deallocate(co_acel)
+if(allocated(co_force)) deallocate(co_force)
 
 allocate(atom_owner(sys%nat))
 allocate(co_owner(sys%nat)[*])
+allocate(co_element(sys%nat)[*])
 allocate(atom_visible(sys%nat))
+allocate(co_skip(sys%nat)[*])
 allocate(co_pos(3,sys%nat)[*])
+allocate(co_old_cg(3,sys%nat)[*],co_pos_old(3,sys%nat)[*])
+allocate(co_vel(3,sys%nat)[*],co_acel(3,sys%nat)[*],co_force(3,sys%nat)[*])
 co_pos(:,:) = 0._dp
+co_old_cg(:,:) = 0._dp
+co_pos_old(:,:) = 0._dp
+co_vel(:,:) = 0._dp
+co_acel(:,:) = 0._dp
+co_force(:,:) = 0._dp
 co_owner(:) = 1
+co_element(:) = 119
+co_skip(:) = .false.
 atom_visible(:) = .true.
 
 atom_owner(:) = 1
@@ -1796,9 +2075,22 @@ end subroutine fuerza
 
 !Output
 subroutine salida()  ! Escribe los datos calc. :P
-integer  :: j ! Siempre hay que definirlos =O siempre privados
+integer  :: j, image, total_try, total_depo
 type(atom_dclist), pointer :: la 
 real(dp) :: energia
+
+output_try=try
+output_depo=depo
+sync all
+
+total_try=0
+total_depo=0
+do image=1,num_images()
+  total_try=total_try+output_try[image]
+  total_depo=total_depo+output_depo[image]
+enddo
+try=0
+depo=0
 
 if (this_image() /= 1) return
 
@@ -1824,10 +2116,8 @@ write(13,*)t,temp
 
 write(14,*)t,rho
 
-write(15,*)t,try
-try= 0
-write(16,*)t,depo
-depo= 0
+write(15,*)t,total_try
+write(16,*)t,total_depo
 
 flush(16)
 flush(15)
