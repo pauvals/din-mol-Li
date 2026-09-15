@@ -52,25 +52,9 @@ For GNU Fortran with an explicit runtime library:
 
 Multi-image execution uses coarray intrinsics directly in `dana.F90`. Domain
 ownership is represented by a three-dimensional Cartesian image grid. The
-current validation topology is `[1,1,num_images()]`, which splits the box into
-z-slabs.
-Each image owns the `focus` atoms in its slab and keeps neighbor candidates from
-its owned slab plus a z-halo of width `hs%rcut + nb_dcut`. Owned atom positions
-are still synchronized through a full replicated coarray buffer after updates.
-This is a correctness scaffold for neighbor/halo work, not the final scalable
-communication pattern.
-
-For multi-image runs, image 1 also builds a read-only list of unique physical
-overlap pairs before the current serialized correction. Periodic ghosts are
-mapped to their real atoms, pairs are assigned deterministically to the owner
-of the lower global atom index, and the final profile reports local,
-cross-domain, deposition, duplicate, and pair-owner counts. This diagnostic
-does not change the trajectory and is the basis for distributing overlap
-resolution later.
-
-The next topology to benchmark is an x-y process grid with domains spanning z,
-which distributes the deposition surface across all images. The current
-z-slab mode remains the byte-equivalent validation baseline.
+default topology `[1,1,num_images()]` splits the box into z slabs. Each image
+owns the `focus` atoms in its domain and keeps neighboring candidates in a halo
+of width `hs%rcut + nb_dcut`.
 
 Select x-y columns at runtime with:
 
@@ -79,6 +63,13 @@ Select x-y columns at runtime with:
 The image grid is factored automatically according to the lateral box aspect
 ratio. Omitting `DANA_DOMAIN_TOPOLOGY` keeps z slabs.
 
+DANA also uses OpenMP inside each image. Set `OMP_NUM_THREADS` explicitly for
+multi-image benchmarks so the product of images and threads matches the CPU
+allocation. For example, on a six-core allocation:
+
+    OMP_NUM_THREADS=3 DANA_DOMAIN_TOPOLOGY=xy \
+      GFORTRAN_NUM_IMAGES=2 ./dana
+
 Multi-image overlap correction uses bounded synchronized rounds. Each image
 detects conflicts involving its owned focus atoms, chooses a rollback target
 from the displacement since the start of the step, applies changes only to
@@ -86,7 +77,9 @@ owned atoms, and then exchanges state before checking residual overlaps. A
 conflict with no remaining displacement is reported as residual instead of
 causing unbounded recursion. The current implementation deliberately exchanges
 a full replicated state and is a correctness baseline, not yet the final
-communication pattern.
+communication pattern. Measurements show that this exchange grows poorly with
+system size; compact Cartesian neighbor halos and explicit atom migration are
+the next development target.
 
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.
