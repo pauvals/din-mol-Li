@@ -82,11 +82,12 @@ program dana
   real(dp),allocatable:: recv_pos(:,:), recv_old_cg(:,:), recv_pos_old(:,:)
   real(dp),allocatable:: recv_vel(:,:), recv_acel(:,:), recv_force(:,:)
   integer,allocatable :: atom_owner(:)
-  integer,allocatable :: co_element(:)[:]
-  integer,allocatable :: recv_element(:)
+  integer,allocatable :: co_uid(:)[:], co_element(:)[:]
+  integer,allocatable :: recv_uid(:), recv_element(:), uid_to_sys(:)
   logical,allocatable :: atom_visible(:), co_skip(:)[:]
   logical,allocatable :: recv_skip(:)
   logical             :: focus_dirty = .false.
+  integer             :: next_atom_uid=0
   integer             :: co_owned_count[*]=0
   integer             :: overlap_round_actions[*]=0, overlap_round_unresolved[*]=0
   integer             :: output_try[*]=0, output_depo[*]=0
@@ -613,6 +614,7 @@ read(11,*)
 
 if(allocated(atom_owner)) deallocate(atom_owner)
 if(allocated(co_element)) deallocate(co_element)
+if(allocated(co_uid)) deallocate(co_uid)
 if(allocated(atom_visible)) deallocate(atom_visible)
 if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
@@ -628,9 +630,12 @@ if(allocated(recv_vel)) deallocate(recv_vel)
 if(allocated(recv_acel)) deallocate(recv_acel)
 if(allocated(recv_force)) deallocate(recv_force)
 if(allocated(recv_element)) deallocate(recv_element)
+if(allocated(recv_uid)) deallocate(recv_uid)
+if(allocated(uid_to_sys)) deallocate(uid_to_sys)
 if(allocated(recv_skip)) deallocate(recv_skip)
 allocate(atom_owner(n))
 allocate(co_element(n)[*])
+allocate(co_uid(n)[*])
 allocate(atom_visible(n))
 allocate(co_skip(n)[*])
 allocate(co_pos(3,n)[*])
@@ -638,9 +643,10 @@ allocate(co_old_cg(3,n)[*],co_pos_old(3,n)[*])
 allocate(co_vel(3,n)[*],co_acel(3,n)[*],co_force(3,n)[*])
 allocate(recv_pos(3,n),recv_old_cg(3,n),recv_pos_old(3,n))
 allocate(recv_vel(3,n),recv_acel(3,n),recv_force(3,n))
-allocate(recv_element(n),recv_skip(n))
+allocate(recv_uid(n),recv_element(n),recv_skip(n))
   atom_owner(:)=1
   co_element(:)=119
+  co_uid(:)=0
   atom_visible(:)=.true.
   co_skip(:)=.false.
   co_pos(:,:)=0._dp
@@ -651,11 +657,14 @@ allocate(recv_element(n),recv_skip(n))
   co_force(:,:)=0._dp
   focus_dirty=.true.
 
+next_atom_uid=0
 do i=1,n
 
   ! Allocatea el atomo-como un puntero del tipo 'atom'
   allocate(pa)
   call pa%init()
+  next_atom_uid=next_atom_uid+1
+  pa%uid=next_atom_uid
 
   read(11,*) sym,pa%pos(:)
   call pa%setsym(sym) ! Asigna algunos valores según tipo de átomo
@@ -903,10 +912,12 @@ subroutine sync_owned_positions()
 ! transfers instead of many scalar coindexed reads.
 use gems_errors, only: werr
 type(atom_dclist), pointer :: la
+type(atom), pointer        :: received_atom
 integer                   :: i, owner, nrecv, slot
 
 call prof_start(prof_sync_pos_tick)
 call ensure_sync_storage()
+call rebuild_uid_index()
 if(num_images()==1) then
   call refresh_domain_ownership()
   call prof_stop(prof_sync_pos_tick,prof_sync_pos,prof_n_sync_pos)
@@ -920,6 +931,7 @@ do i=1,sys%nat
   if(atom_owner(i) /= this_image()) cycle
   co_owned_count=co_owned_count+1
   slot=co_owned_count
+  co_uid(slot) = la%o%uid
   co_pos(:,slot) = la%o%pos(:)
   co_old_cg(:,slot) = la%o%old_cg(:)
   co_pos_old(:,slot) = la%o%pos_old(:)
@@ -935,6 +947,7 @@ sync all
 do owner=1,num_images()
   nrecv=co_owned_count[owner]
   if(nrecv==0) cycle
+  recv_uid(:nrecv)=co_uid(:nrecv)[owner]
   recv_pos(:,:nrecv)=co_pos(:,:nrecv)[owner]
   recv_old_cg(:,:nrecv)=co_old_cg(:,:nrecv)[owner]
   recv_pos_old(:,:nrecv)=co_pos_old(:,:nrecv)[owner]
@@ -944,22 +957,22 @@ do owner=1,num_images()
   recv_element(:nrecv)=co_element(:nrecv)[owner]
   recv_skip(:nrecv)=co_skip(:nrecv)[owner]
 
-  slot=0
-  la => sys%alist
-  do i=1,sys%nat
-    la => la%next
-    if(atom_owner(i)/=owner) cycle
-    slot=slot+1
-    if(la%o%z/=recv_element(slot)) call la%o%setz(recv_element(slot))
-    la%o%pos(:)=recv_pos(:,slot)
-    la%o%old_cg(:)=recv_old_cg(:,slot)
-    la%o%pos_old(:)=recv_pos_old(:,slot)
-    la%o%vel(:)=recv_vel(:,slot)
-    la%o%acel(:)=recv_acel(:,slot)
-    la%o%force(:)=recv_force(:,slot)
-    la%o%skip=recv_skip(slot)
+  do slot=1,nrecv
+    call werr('Invalid atom UID in coarray snapshot',recv_uid(slot)<1 .or. &
+      recv_uid(slot)>size(uid_to_sys))
+    i=uid_to_sys(recv_uid(slot))
+    call werr('Unknown atom UID in coarray snapshot',i<1)
+    received_atom=>sys%a(i)%o
+    call werr('Coarray atom ownership mismatch',atom_owner(i)/=owner)
+    if(received_atom%z/=recv_element(slot)) call received_atom%setz(recv_element(slot))
+    received_atom%pos(:)=recv_pos(:,slot)
+    received_atom%old_cg(:)=recv_old_cg(:,slot)
+    received_atom%pos_old(:)=recv_pos_old(:,slot)
+    received_atom%vel(:)=recv_vel(:,slot)
+    received_atom%acel(:)=recv_acel(:,slot)
+    received_atom%force(:)=recv_force(:,slot)
+    received_atom%skip=recv_skip(slot)
   enddo
-  call werr('Coarray owner record count mismatch',slot/=nrecv)
 enddo
 
 sync all
@@ -968,6 +981,28 @@ call refresh_domain_ownership()
 call prof_stop(prof_sync_pos_tick, prof_sync_pos, prof_n_sync_pos)
 
 end subroutine sync_owned_positions
+
+
+subroutine rebuild_uid_index()
+use gems_errors, only: werr
+type(atom_dclist),pointer :: list_atom
+integer                   :: i, sys_id, uid
+
+if(allocated(uid_to_sys)) deallocate(uid_to_sys)
+allocate(uid_to_sys(max(1,next_atom_uid)))
+uid_to_sys(:)=0
+
+list_atom=>sys%alist
+do i=1,sys%nat
+  list_atom=>list_atom%next
+  uid=list_atom%o%uid
+  call werr('Physical atom has no valid UID',uid<1 .or. uid>size(uid_to_sys))
+  sys_id=list_atom%o%gid(sys)
+  call werr('Duplicate physical atom UID',uid_to_sys(uid)/=0)
+  uid_to_sys(uid)=sys_id
+enddo
+
+end subroutine rebuild_uid_index
 
 
 subroutine refresh_domain_ownership()
@@ -1347,7 +1382,7 @@ type(atom_dclist), pointer :: la
 integer, allocatable       :: old_owner(:)
 integer                    :: i, nold
 
-if(allocated(atom_owner) .and. allocated(co_element) .and. &
+if(allocated(atom_owner) .and. allocated(co_uid) .and. allocated(co_element) .and. &
   allocated(atom_visible) .and. allocated(co_skip) .and. allocated(co_pos) .and. &
   allocated(co_old_cg) .and. allocated(co_pos_old) .and. allocated(co_vel) .and. &
   allocated(co_acel) .and. allocated(co_force)) then
@@ -1368,6 +1403,7 @@ if(allocated(atom_visible)) deallocate(atom_visible)
 
 sync all
 if(allocated(co_element)) deallocate(co_element)
+if(allocated(co_uid)) deallocate(co_uid)
 if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
 if(allocated(co_old_cg)) deallocate(co_old_cg)
@@ -1382,10 +1418,13 @@ if(allocated(recv_vel)) deallocate(recv_vel)
 if(allocated(recv_acel)) deallocate(recv_acel)
 if(allocated(recv_force)) deallocate(recv_force)
 if(allocated(recv_element)) deallocate(recv_element)
+if(allocated(recv_uid)) deallocate(recv_uid)
+if(allocated(uid_to_sys)) deallocate(uid_to_sys)
 if(allocated(recv_skip)) deallocate(recv_skip)
 
 allocate(atom_owner(sys%nat))
 allocate(co_element(sys%nat)[*])
+allocate(co_uid(sys%nat)[*])
 allocate(atom_visible(sys%nat))
 allocate(co_skip(sys%nat)[*])
 allocate(co_pos(3,sys%nat)[*])
@@ -1393,7 +1432,7 @@ allocate(co_old_cg(3,sys%nat)[*],co_pos_old(3,sys%nat)[*])
 allocate(co_vel(3,sys%nat)[*],co_acel(3,sys%nat)[*],co_force(3,sys%nat)[*])
 allocate(recv_pos(3,sys%nat),recv_old_cg(3,sys%nat),recv_pos_old(3,sys%nat))
 allocate(recv_vel(3,sys%nat),recv_acel(3,sys%nat),recv_force(3,sys%nat))
-allocate(recv_element(sys%nat),recv_skip(sys%nat))
+allocate(recv_uid(sys%nat),recv_element(sys%nat),recv_skip(sys%nat))
 co_pos(:,:) = 0._dp
 co_old_cg(:,:) = 0._dp
 co_pos_old(:,:) = 0._dp
@@ -1401,6 +1440,7 @@ co_vel(:,:) = 0._dp
 co_acel(:,:) = 0._dp
 co_force(:,:) = 0._dp
 co_element(:) = 119
+co_uid(:) = 0
 co_skip(:) = .false.
 atom_visible(:) = .true.
 
@@ -1562,6 +1602,8 @@ adj: do i=1,nadj
     ! Initialize particle from template.
     allocate(o)
     call o%init()
+    next_atom_uid=next_atom_uid+1
+    o%uid=next_atom_uid
     call atom_asign(o,ref)
     o%pos(:)=r(:)
     o%pos_old(:)=r(:)
@@ -1647,6 +1689,8 @@ do j=1,g2%nat
   o1=> la%o
   allocate(o2)
   call o2%init()
+  next_atom_uid=next_atom_uid+1
+  o2%uid=next_atom_uid
   call g1%attach(o2) ! Sys
 
   ! Lista de vecinos

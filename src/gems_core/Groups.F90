@@ -282,6 +282,10 @@ type(igroup),target,public  :: sys
 
 type, public :: atom
 
+  ! Persistent physical identity. Execution-view IDs below describe group
+  ! membership and may change when an index is rebuilt.
+  integer                :: uid=0
+
   ! Group membership
   ! ----------------
 

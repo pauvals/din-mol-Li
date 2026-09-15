@@ -81,6 +81,10 @@ communication pattern. Measurements show that this exchange grows poorly with
 system size; compact Cartesian neighbor halos and explicit atom migration are
 the next development target.
 
+Physical atoms carry a persistent `uid` for coarray records. GEMS `gid` and
+`gri` remain execution-view and group-membership indices and must not be used as
+persistent distributed identities.
+
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.
 
