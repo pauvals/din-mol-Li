@@ -89,6 +89,7 @@ program dana
   logical             :: focus_dirty = .false.
   integer             :: next_atom_uid=0
   integer             :: co_owned_count[*]=0
+  integer             :: co_rho_count[*]=0
   integer             :: overlap_round_actions[*]=0, overlap_round_unresolved[*]=0
   integer             :: output_try[*]=0, output_depo[*]=0
   integer             :: overlap_parallel_rounds=0, overlap_parallel_residuals=0
@@ -1470,7 +1471,7 @@ use gems_program_types, only: box
 real(dp)::vol,min_vol,z
 real(dp),intent(out)::rho
 type(atom_dclist), pointer :: la 
-integer::i,g
+integer::i,g,image
 
 g=0
 min_vol=box(1)*box(2)*2.5_dp
@@ -1485,8 +1486,19 @@ la => sys%alist
 do i=1, sys%nat ! Para contar las partícs. por encima de z0
 la => la%next
  pa=> la%o
+ if(num_images()>1 .and. atom_owner(i)/=this_image()) cycle
  if (pa%pos(3)>z0 .and. pa%pos(3)<z) g= g+1 ! piston
 enddo
+
+if(num_images()>1) then
+  co_rho_count=g
+  sync all
+  g=0
+  do image=1,num_images()
+    g=g+co_rho_count[image]
+  enddo
+  sync all
+endif
 
 vol=box(1)*box(2)*(z-z0) ! piston
 rho=g/vol
