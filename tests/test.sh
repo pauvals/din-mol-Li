@@ -1,40 +1,14 @@
 #!/bin/bash
 
-tests=${1:-ermak brown gcmc}
- 
-if [[ "$tests" == *"ermak"* ]]; then
-	echo -e "Corriendo test de Ermak con pistón de partículas. Data en \e[1mermak/data_ermak\e[0m =)"
-	cd ermak
-	rm -f Li.xyz data_ermak
-	time ( ../../src/dana > data_ermak )
-	diff <(tail -n 1206 Li.xyz) ref.xyz > /dev/null && echo -e "\e[1;103mOk_Ermak\e[0m" || echo -e "\e[1;101mFAIL_Ermak\e[0m"
-	cd ..
+cd gcmc
+rm -f Li.xyz data_gcmc
+
+echo "Running Brownian hard-sphere simulation with GCMC reservoir"
+time ../../src/dana > data_gcmc
+
+if diff <(tail -n 596 Li.xyz) ref.xyz > /dev/null; then
+  echo "Ok_GCMC"
+else
+  echo "FAIL_GCMC"
+  exit 1
 fi
-
-
-if [[ "$tests" == *"brown"* ]]; then
-	echo -e "Corriendo test de Browniana con agregado de partículas. Data en \e[1mbrown/data_brown\e[0m =)"
-	cd brown
-	rm -f Li.xyz data_brown
-
-	time ( ../../src/dana > data_brown )
-	diff <(tail -n 1507 Li.xyz) ref.xyz > /dev/null && echo -e "\e[1;103mOk_Brown\e[0m" || echo -e "\e[1;101mFAIL_Brown\e[0m"
-	cd ..
-fi
- 
-
-if [[ "$tests" == *"gcmc"* ]]; then
-  x=gcmc
-	echo -e "Corriendo test de $x. Data en \e[1mgcmc/data_$x\e[0m =)"
-	cd gcmc
-	rm -f Li.xyz data_$x
-
-	time ( ../../src/dana > data_$x )
-	diff <(tail -n 596 Li.xyz) ref.xyz > /dev/null && echo -e	"\e[1;103mOk_$x\e[0m" || echo -e "\e[1;101mFAIL_$x\e[0m"
-	cd ..
-fi
- 
-echo "Saliendo de carpeta del test..."
-cd ..
-
-echo "¡Listo!"

@@ -7,12 +7,22 @@
 
 
 
-Repo para un programa de Dinámica Molecular que permite estudiar la deposición de iones Li+ sobre un electrodo de Li metálico. 
+Repo para simular la deposición mesoscópica de iones Li+ sobre un electrodo de Li metálico.
 
-Repo for a Molecular Dynamics program to study Li+ ions deposition onto a Li metal electrode.
+The `hpc-light` branch contains only the model used for current HPC work:
+Brownian hard-sphere dynamics, overlap resolution, and a GCMC reservoir. Ermak
+dynamics, Lennard-Jones forces, piston/chunk reservoirs, constant-density
+control, and their observables were intentionally removed.
 
-### + info
-There are three possible reservoir types to study, and two positions integrators.
+### Input and output
+
+`entrada.ini` contains the seed, deposition probability, time controls, box,
+SC/SEI diffusion coefficients, neighbor skin, and initial-condition flags.
+`movedor.ini` contains one line with GCMC activity and attempts per step:
+
+    0.000627 10  ! activity, attempts
+
+The retained outputs are `Li.xyz`, `try.dat`, and `depo.dat`.
 
 ### Compiling and testing
 
@@ -75,11 +85,15 @@ detects conflicts involving its owned focus atoms, chooses a rollback target
 from the displacement since the start of the step, applies changes only to
 owned atoms, and then exchanges state before checking residual overlaps. A
 conflict with no remaining displacement is reported as residual instead of
-causing unbounded recursion. The current implementation deliberately exchanges
-a full replicated state and is a correctness baseline, not yet the final
-communication pattern. Measurements show that this exchange grows poorly with
-system size; compact Cartesian neighbor halos and explicit atom migration are
-the next development target.
+causing unbounded recursion. Routine synchronization exchanges compact boundary
+halos and migration records; output checkpoints request a complete snapshot.
+The current implementation still polls every image rather than only Cartesian
+neighbors.
+
+GCMC is currently validated only in single-image mode. A multi-image run fails
+because each image consumes a different stateful random stream and can create or
+delete a different atom. The next HPC checkpoint must use decomposition-stable
+random event keys and synchronize GCMC operations before changing `sys`.
 
 Physical atoms carry a persistent `uid` for coarray records. GEMS `gid` and
 `gri` remain execution-view and group-membership indices and must not be used as

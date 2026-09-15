@@ -8,30 +8,19 @@ program dana
   implicit none
  
   ! Cosas del sistema  #what a quilombo
-  integer             :: n, nx, nchunk        ! Num de particulas
-  real(dp), parameter :: o=0._dp, tau=0.1_dp  ! Origen de la caja, tau p/ rho
-  real(dp)            :: z0, z1, zmax         ! Para ajuste del reservorio
+  integer             :: n                    ! Num de particulas
+  real(dp), parameter :: o=0._dp               ! Origen de la caja
+  real(dp)            :: z0, zmax              ! Limites verticales
   real(dp)            :: xi, yi               ! Tamaño en x e y de caja sim.
   real(dp)            :: domain_lo(3)[*], domain_hi(3)[*]
   real(dp)            :: domain_global_lo(3), domain_global_hi(3)
   integer             :: domain_dims(3)=[1,1,1], domain_coord(3)=[0,0,0]
   logical             :: domain_periodic(3)=[.true.,.true.,.false.]
   character(8)        :: domain_topology='z'
-  real(dp), parameter :: gama=1._dp           ! Para fricción
   real(dp)            :: dif, dif_sei, dif_sc ! Difusion
-  real(dp), parameter :: Tsist=300._dp        ! T= 300 K
-  real(dp)            :: eps(3,3),r0(3,3)     ! Lennard-Jones epsilon, r0 
-
-  ! Constantes Físicas y
-  ! factores de conversión de unidades
-  real(dp), parameter :: kB_eVK=8.617330350e-5_dp  ! cte. Boltzmann en eV
-  real(dp), parameter :: kJm_ui=100._dp, eV_kJm=96.485_dp,eV_ui=eV_kJm*kJm_ui
-  real(dp), parameter :: kB_ui=kB_eVK*eV_ui
-  real(dp), parameter :: kT_ui=kB_ui*300._dp  !en ui, la T= 300 K
  
   ! Variables dinámicas, agrupadas en átomo
-  type(atom), allocatable, target :: a(:) ! átomo
-  type(atom), pointer             :: pa=>null(), pb=>null()
+  type(atom), pointer             :: pa=>null()
   real(dp)                        :: prob,max_vel=0._dp, msd_u= 0._dp, msd_t= 0._dp, msd_max= 0._dp
 
   ! Contador de choques (superposiciones)
@@ -43,18 +32,12 @@ program dana
   integer             :: nwr        ! paso de escritura
   real(dp)            :: t=0.0_dp   ! tiempo en ps
 
-  ! To configure the run: positions integrator and reservoir type 
-  logical             :: integrador, s_piston=.false.,s_chunk=.false.,&
-                         new_sim, electrodo, ideal_dep
-
-  ! Observables
-  real(dp)            :: temp,rho,rho0
+  logical             :: new_sim, electrodo
 
   ! Varios
   integer             :: idum         ! Semilla
   integer             :: i,j,k        ! Enteros
   integer             :: try, depo    ! Parts. cercanas a electrodo y deposic.
-  real(dp)            :: dist, rhomedia, cstdev, factor, factor2
   integer             :: prof_integrate_tick, prof_sync_pos_tick, prof_sync_views_tick
   integer             :: prof_overlap_tick, prof_output_tick
   real(dp)            :: prof_integrate=0._dp, prof_sync_pos=0._dp, prof_sync_views=0._dp
@@ -69,18 +52,9 @@ program dana
   integer             :: overlap_cross_observations=0, overlap_deposition_observations=0
   integer             :: overlap_duplicate_observations=0
 
-  ! Ermak
-  logical             :: ermak 
-  real(dp)            :: cc0,cc1,cc2, cc0_sei,cc1_sei,cc2_sei,&
-                         cc0_sc,cc1_sc,cc2_sc
-  real(dp)            :: sdr,sdv, sdr_sei,sdv_sei, sdr_sc,sdv_sc, skt
-  real(dp)            :: crv1,crv2, crv1_sei,crv2_sei, crv1_sc,crv2_sc
-  real(dp),allocatable:: ranv(:,:)
   real(dp),allocatable:: co_pos(:,:)[:]
-  real(dp),allocatable:: co_old_cg(:,:)[:], co_pos_old(:,:)[:]
-  real(dp),allocatable:: co_vel(:,:)[:], co_acel(:,:)[:], co_force(:,:)[:]
-  real(dp),allocatable:: recv_pos(:,:), recv_old_cg(:,:), recv_pos_old(:,:)
-  real(dp),allocatable:: recv_vel(:,:), recv_acel(:,:), recv_force(:,:)
+  real(dp),allocatable:: co_old_cg(:,:)[:], co_vel(:,:)[:]
+  real(dp),allocatable:: recv_pos(:,:), recv_old_cg(:,:), recv_vel(:,:)
   integer,allocatable :: atom_owner(:)
   integer,allocatable :: co_uid(:)[:], co_element(:)[:], co_new_owner(:)[:]
   integer,allocatable :: recv_uid(:), recv_element(:), recv_owner(:), uid_to_sys(:)
@@ -89,21 +63,16 @@ program dana
   logical             :: focus_dirty = .false.
   integer             :: next_atom_uid=0
   integer             :: co_owned_count[*]=0
-  integer             :: co_rho_count[*]=0
   integer             :: overlap_round_actions[*]=0, overlap_round_unresolved[*]=0
   integer             :: output_try[*]=0, output_depo[*]=0
   integer             :: overlap_parallel_rounds=0, overlap_parallel_residuals=0
    
   ! GCMC
-  logical             :: s_gcmc=.false.
   type(group)         :: gcmc
   real(dp)            :: act
   integer             :: nadj
   type(atom_dclist), pointer :: la, lb 
   
-  ! Group to add particles
-  type(group)         :: chunk
-
   ! Group used to compute neighbors list
   type(ngroup)        :: hs
   type(group), target :: hs_focus, hs_candidate
@@ -128,22 +97,6 @@ program dana
   call set_z(2,sym='CG',mass=6.94_dp)
   call set_z(3,sym='F',mass=6.94_dp)
             
-  ! Lennard-Jones: epsilon,  r0 :P
-  eps(:,2) = 0
-  r0(:,2)  = 0
-  eps(2,:) = 0
-  r0(2,:)  = 0
-  r0(2,1)  = 3.5_dp  
-  r0(1,2)  = 3.5_dp
-  eps(1,1) = 2313.6_dp 
-  r0(1,1)  = 3.2_dp
-  eps(3,3) = 121._dp
-  r0(3,3)  = 3.61_dp
-  eps(1,3) = 529.1_dp
-  eps(3,1) = eps(1,3)
-  r0(1,3)  = 1.564_dp
-  r0(3,1)  = r0(1,3)
- 
   ! Para contar partículas que intentan deposic.
   try= 0
   depo= 0
@@ -166,7 +119,7 @@ program dana
   hs%candidate%aupd=1._dp
   call hs%setrc(3.2_dp) ! Maximo radio de corte
 
-  ! Configure integrator and reservoir for the run.
+  ! Configure the GCMC reservoir.
   call config_run()
 
   ! Generar posiciones inic.
@@ -179,37 +132,22 @@ program dana
   call config_inic()
   call sync_owned_positions()
 
-  ! Add to GCMC
-  if(s_gcmc) then
-    call gcmc%init()
-    la=>sys%alist
-    do j=1,sys%nat
-     la=>la%next 
-     if(la%o%z==1) call gcmc%attach(la%o)
-    enddo
-  endif
+  call gcmc%init()
+  la=>sys%alist
+  do j=1,sys%nat
+    la=>la%next
+    if(la%o%z==1) call gcmc%attach(la%o)
+  enddo
 
   !Search neighbors
   call sync_execution_views()
 
-  if (integrador) call fuerza(hs,eps,r0)
   call sync_owned_positions()
-
-  ! Calcula rho - densidad reservorio inicial
-  call calc_rho(rho)
-  rho0=rho
-  
-
-  ! Leer chunk de atoms (Reservoir 2):
-  if(s_chunk)  call config_chunk()
 
 
   ! Output 
   if (this_image() == 1) then
     open(11,File='Li.xyz')
-    open(12,File='E.dat')
-    open(13,File='T.dat')
-    open(14,File='rho.dat')
     open(15,File='try.dat')
     open(16,File='depo.dat')
   endif
@@ -222,25 +160,9 @@ program dana
     ! Da un paso #wii
 
     call prof_start(prof_integrate_tick)
-    if (integrador) then
-      ! Para trabajar con din. Langevin
-      call ermak_a(hs,ranv)
-      ! FIXME: sync_execution_views must be always before force calculation
-      ! TODO: ver de sacar ya knock
-      ! Ve si congela o rebota
-      ! call knock(hs)
-      call fuerza(hs,eps,r0)
-      call ermak_b(hs,ranv)
-      call prof_stop(prof_integrate_tick, prof_integrate, prof_n_integrate)
-      call sync_owned_positions()
-
-    else
-      ! Para usar din. Browniana, y ~esferas duras
-      call cbrownian_hs(hs,h)
-      call prof_stop(prof_integrate_tick, prof_integrate, prof_n_integrate)
-      call sync_owned_positions()
-
-    endif
+    call cbrownian_hs(hs,h)
+    call prof_stop(prof_integrate_tick, prof_integrate, prof_n_integrate)
+    call sync_owned_positions()
 
     ! Update neighbors for serial overlap solving. Multi-image overlap rebuilds
     ! the all-atom view on image 1 inside solve_overlaps_domain().
@@ -255,30 +177,6 @@ program dana
     msd_t= msd_t/hs%focus%nat
     msd_max= max(msd_max,msd_t)
  
-    ! Para estudiar desposic. ideal (Cottrell):
-    if (ideal_dep) then
-      la=> hs%focus%alist
-      do j = 1, hs%focus%nat
-        la=> la%next
-        o1=> la%o
-        if (o1%sym/='F') cycle
-        lb => la%prev
-        if(s_gcmc) call gcmc%detach(o1)
-        call o1%dest()
-        deallocate(o1)
-        la => lb
-      ! Fin chequeo
-      enddo
-      la=> hs%focus%alist
-      do j = 1, hs%focus%nat
-        la=> la%next
-        o1=> la%o
-        if (o1%sym/='F') cycle 
-        print *, 'error'
-        stop
-      enddo
-    endif
-
     ! Add new CG to the ref group
     ! NOTE: Should we allow chain reaction instead?
     la=> hs%focus%alist
@@ -291,20 +189,11 @@ program dana
       call hs_focus%detach(o1)
       call hs%focus%detach(o1)
       la => lb
-      if(s_gcmc) call gcmc%detach(o1)
+      call gcmc%detach(o1)
     enddo
     
-    ! Reservoir 3 - GCMC:
-    if(s_gcmc) then
-      call gcmc_run(gcmc)
-      call sync_owned_positions()
-    endif
-      
-    ! Cant. de partículas en reservorio o sensor
-    call calc_rho(rho)
-
-    ! Reservoir 2 - blocks of atoms: 
-    if (s_chunk) call bloques(sys, chunk, nx, rho)
+    call gcmc_run(gcmc)
+    call sync_owned_positions()
 
     ! Output 
     if (mod(i,nwr)==0) then
@@ -319,18 +208,12 @@ program dana
     ! Timing information
     call timer_dump(i,nup=nupd_vlist)
   
-    ! Reservoir 1 - piston:
-    if (s_piston) call maxz(zmax)
-
     t=t+h
    
   enddo
  
   if (this_image() == 1) then
     close(11)
-    close(12)
-    close(13)
-    close(14)
     close(15)
     close(16)
   endif
@@ -442,7 +325,6 @@ read(15,*) nst
 read(15,*) nwr
 read(15,*) xi 
 read(15,*) yi
-read(15,*) dist 
 read(15,*) z0 
 read(15,*) zmax 
 read(15,*) dif_sc 
@@ -450,7 +332,6 @@ read(15,*) dif_sei
 read(15,*) nb_dcut
 read(15,*) new_sim
 read(15,*) electrodo
-read(15,*) ideal_dep
 close(15)
 end subroutine entrada
 
@@ -462,7 +343,7 @@ integer             :: n
 real(dp),allocatable:: r(:,:) !posic.
 real(dp)            :: Mol, v1(3),v2(3),dif_pos(3), alto, dif2 ! molaridad, diferencia entre vectores posic., alto caja sim.
 real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
-integer             :: i,j,l,k,n_CG,n_Li
+integer             :: i,j,k,n_CG
 logical,parameter   :: pbc(3)=[.true.,.true.,.false.]
 character(10)       :: sym
 
@@ -535,17 +416,14 @@ write(12,'(a,4(x,f25.12))') 'Li',r(i,1),r(i,2),r(i,3),mLi
 
 enddo
 close(12)
-close(13)
+if(electrodo) close(13)
 
 
 end subroutine gen_pos_inic
 
 
 subroutine config_run()
-! Integrator and reservoir configuration 
-use gems_errors, only: werr
 use gems_program_types, only: tbox, box_setvars  
-character(100)  :: a
 
 ! Set the box
 tbox(:,:)= 0._dp
@@ -554,29 +432,8 @@ tbox(2,2)= yi
 tbox(3,3)= zmax
 call box_setvars()
 
-open(15,File='movedor.ini') ! by Nohe :)
-read(15,*) integrador 
-
-! tipo de reservorio
-read(15,*) a
-select case(trim(a))
-! Reservoir type 1
-case('piston')
-  s_piston=.true.
-
-! Reservoir type 2
-case('chunks')
-  s_chunk=.true.
-  call chunk%init()
-
-! Reservoir type 3
-case('gcmc')
-  s_gcmc=.true.
-  read(15,*) act, nadj
-case default
-  call werr('Unknown reservoir type',.true.)
-end select
-
+open(15,File='movedor.ini')
+read(15,*) act, nadj
 close(15)
 end subroutine config_run
 
@@ -588,29 +445,11 @@ integer :: i
 !type(atom_dclist), pointer :: la
 character(10)     :: sym
 
-! Tamaños iniciales de "reservorio"
-if(s_chunk) then
-  ! Al usar chunk con sensor
-  dist= dist + hs%rcut
-  z1 = z0 + dist
-  zmax = z1 + dist 
-endif
-
 if(num_images() > 1) then
   tbox(3,3)=zmax
   call box_setvars()
 endif
 call set_domain_bounds()
-
-! Para luego actualizar reservorio
-rhomedia= 5.775329e-4_dp
-cstdev= 1.0754306e-4_dp
-factor= rhomedia - cstdev
-factor2= rhomedia + cstdev
-! 18.6211140525501
-! 0.000577532941264052= STATS_mean
-! 0.000107543058373559= 4*STATS_stddev
-
 
 open(11,File='pos_inic.xyz')
 read(11,*) n
@@ -624,16 +463,10 @@ if(allocated(atom_visible)) deallocate(atom_visible)
 if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
 if(allocated(co_old_cg)) deallocate(co_old_cg)
-if(allocated(co_pos_old)) deallocate(co_pos_old)
 if(allocated(co_vel)) deallocate(co_vel)
-if(allocated(co_acel)) deallocate(co_acel)
-if(allocated(co_force)) deallocate(co_force)
 if(allocated(recv_pos)) deallocate(recv_pos)
 if(allocated(recv_old_cg)) deallocate(recv_old_cg)
-if(allocated(recv_pos_old)) deallocate(recv_pos_old)
 if(allocated(recv_vel)) deallocate(recv_vel)
-if(allocated(recv_acel)) deallocate(recv_acel)
-if(allocated(recv_force)) deallocate(recv_force)
 if(allocated(recv_element)) deallocate(recv_element)
 if(allocated(recv_uid)) deallocate(recv_uid)
 if(allocated(recv_owner)) deallocate(recv_owner)
@@ -646,10 +479,8 @@ allocate(co_new_owner(n)[*])
 allocate(atom_visible(n))
 allocate(co_skip(n)[*])
 allocate(co_pos(3,n)[*])
-allocate(co_old_cg(3,n)[*],co_pos_old(3,n)[*])
-allocate(co_vel(3,n)[*],co_acel(3,n)[*],co_force(3,n)[*])
-allocate(recv_pos(3,n),recv_old_cg(3,n),recv_pos_old(3,n))
-allocate(recv_vel(3,n),recv_acel(3,n),recv_force(3,n))
+allocate(co_old_cg(3,n)[*],co_vel(3,n)[*])
+allocate(recv_pos(3,n),recv_old_cg(3,n),recv_vel(3,n))
 allocate(recv_uid(n),recv_element(n),recv_owner(n),recv_skip(n))
   atom_owner(:)=1
   co_element(:)=119
@@ -659,10 +490,7 @@ allocate(recv_uid(n),recv_element(n),recv_owner(n),recv_skip(n))
   co_skip(:)=.false.
   co_pos(:,:)=0._dp
   co_old_cg(:,:)=0._dp
-  co_pos_old(:,:)=0._dp
   co_vel(:,:)=0._dp
-  co_acel(:,:)=0._dp
-  co_force(:,:)=0._dp
   focus_dirty=.true.
 
 next_atom_uid=0
@@ -676,8 +504,6 @@ do i=1,n
 
   read(11,*) sym,pa%pos(:)
   call pa%setsym(sym) ! Asigna algunos valores según tipo de átomo
-  pa%force(:)=0._dp
-  pa%pos_old(:)=pa%pos(:)
 
   ! Agrega atom al sistema (sys)
   call sys%attach(pa)
@@ -702,31 +528,6 @@ do i=1,n
 
 end do
 close(11)
-
-allocate(ranv(n,3))
-
-! Calculo la velocidad neta del sistema/Sino como que se trasladaría todo el sist. en el espacio... Así trabajo c/ coords.
-! internas ;)
-! do k=1,3
-!   vm(k)=sum(pa%pos(k)-pa%pos_old(k))/n
-! enddo
-
-! Sustraer la velocidad neta
-! do i=1,n
-!   pa%pos_old(i)=pa%pos_old(i)-vm(:)
-! end do
-
-!calculo vel. inic.
-! pa%vel(:)=(pa%pos(:)-pa%pos_old(:))/h
-
-! Para trabajar con din. Langevin
-if (integrador) then
-  ! Valores inic. de las ctes. de Ermak
-  ! call set_ermak(h,gama_sc,Tsist,cc0_sc, cc1_sc, cc2_sc, sdr_sc, sdv_sc, crv1_sc, crv2_sc)
-  ! call set_ermak(h,gama,Tsist,cc0_sei, cc1_sei, cc2_sei, sdr_sei, sdv_sei, crv1_sei, crv2_sei)
-  call set_ermak(h,gama,Tsist,cc0, cc1, cc2, sdr, sdv, crv1, crv2)
-
-endif
 
 end subroutine config_inic
 
@@ -954,10 +755,7 @@ do i=1,sys%nat
   co_new_owner(slot) = new_owner
   co_pos(:,slot) = la%o%pos(:)
   co_old_cg(:,slot) = la%o%old_cg(:)
-  co_pos_old(:,slot) = la%o%pos_old(:)
   co_vel(:,slot) = la%o%vel(:)
-  co_acel(:,slot) = la%o%acel(:)
-  co_force(:,slot) = la%o%force(:)
   co_element(slot) = la%o%z
   co_skip(slot) = la%o%skip
 enddo
@@ -971,10 +769,7 @@ do owner=1,num_images()
   recv_owner(:nrecv)=co_new_owner(:nrecv)[owner]
   recv_pos(:,:nrecv)=co_pos(:,:nrecv)[owner]
   recv_old_cg(:,:nrecv)=co_old_cg(:,:nrecv)[owner]
-  recv_pos_old(:,:nrecv)=co_pos_old(:,:nrecv)[owner]
   recv_vel(:,:nrecv)=co_vel(:,:nrecv)[owner]
-  recv_acel(:,:nrecv)=co_acel(:,:nrecv)[owner]
-  recv_force(:,:nrecv)=co_force(:,:nrecv)[owner]
   recv_element(:nrecv)=co_element(:nrecv)[owner]
   recv_skip(:nrecv)=co_skip(:nrecv)[owner]
 
@@ -988,10 +783,7 @@ do owner=1,num_images()
     if(received_atom%z/=recv_element(slot)) call received_atom%setz(recv_element(slot))
     received_atom%pos(:)=recv_pos(:,slot)
     received_atom%old_cg(:)=recv_old_cg(:,slot)
-    received_atom%pos_old(:)=recv_pos_old(:,slot)
     received_atom%vel(:)=recv_vel(:,slot)
-    received_atom%acel(:)=recv_acel(:,slot)
-    received_atom%force(:)=recv_force(:,slot)
     received_atom%skip=recv_skip(slot)
     atom_owner(i)=recv_owner(slot)
     if(recv_owner(slot)==this_image() .or. candidate_atom(received_atom)) atom_visible(i)=.true.
@@ -1327,7 +1119,6 @@ do gid=1,sys%nat
 
   if(.not.do_rollback) cycle
   a%pos(:)=a%old_cg(:)
-  a%acel(:)=0._dp
   a%vel(:)=0._dp
   a%skip=.false.
   choques=choques+1
@@ -1447,8 +1238,7 @@ integer                    :: i, nold
 
 if(allocated(atom_owner) .and. allocated(co_uid) .and. allocated(co_element) .and. &
   allocated(atom_visible) .and. allocated(co_skip) .and. allocated(co_pos) .and. &
-  allocated(co_old_cg) .and. allocated(co_pos_old) .and. allocated(co_vel) .and. &
-  allocated(co_acel) .and. allocated(co_force)) then
+  allocated(co_old_cg) .and. allocated(co_vel)) then
   if(size(atom_owner) == sys%nat .and. size(atom_visible) == sys%nat .and. &
     size(co_pos,2) == sys%nat) return
 endif
@@ -1471,16 +1261,10 @@ if(allocated(co_new_owner)) deallocate(co_new_owner)
 if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
 if(allocated(co_old_cg)) deallocate(co_old_cg)
-if(allocated(co_pos_old)) deallocate(co_pos_old)
 if(allocated(co_vel)) deallocate(co_vel)
-if(allocated(co_acel)) deallocate(co_acel)
-if(allocated(co_force)) deallocate(co_force)
 if(allocated(recv_pos)) deallocate(recv_pos)
 if(allocated(recv_old_cg)) deallocate(recv_old_cg)
-if(allocated(recv_pos_old)) deallocate(recv_pos_old)
 if(allocated(recv_vel)) deallocate(recv_vel)
-if(allocated(recv_acel)) deallocate(recv_acel)
-if(allocated(recv_force)) deallocate(recv_force)
 if(allocated(recv_element)) deallocate(recv_element)
 if(allocated(recv_uid)) deallocate(recv_uid)
 if(allocated(recv_owner)) deallocate(recv_owner)
@@ -1494,17 +1278,12 @@ allocate(co_new_owner(sys%nat)[*])
 allocate(atom_visible(sys%nat))
 allocate(co_skip(sys%nat)[*])
 allocate(co_pos(3,sys%nat)[*])
-allocate(co_old_cg(3,sys%nat)[*],co_pos_old(3,sys%nat)[*])
-allocate(co_vel(3,sys%nat)[*],co_acel(3,sys%nat)[*],co_force(3,sys%nat)[*])
-allocate(recv_pos(3,sys%nat),recv_old_cg(3,sys%nat),recv_pos_old(3,sys%nat))
-allocate(recv_vel(3,sys%nat),recv_acel(3,sys%nat),recv_force(3,sys%nat))
+allocate(co_old_cg(3,sys%nat)[*],co_vel(3,sys%nat)[*])
+allocate(recv_pos(3,sys%nat),recv_old_cg(3,sys%nat),recv_vel(3,sys%nat))
 allocate(recv_uid(sys%nat),recv_element(sys%nat),recv_owner(sys%nat),recv_skip(sys%nat))
 co_pos(:,:) = 0._dp
 co_old_cg(:,:) = 0._dp
-co_pos_old(:,:) = 0._dp
 co_vel(:,:) = 0._dp
-co_acel(:,:) = 0._dp
-co_force(:,:) = 0._dp
 co_element(:) = 119
 co_uid(:) = 0
 co_new_owner(:) = 1
@@ -1529,94 +1308,13 @@ end subroutine ensure_sync_storage
 
 
 ! Reservorios
-subroutine calc_rho(rho) 
-! Densidad/concentrac. reservorio
-use gems_program_types, only: box
-! Dos opciones: pistón,
-! o con sensor: "debajo" está el sistema, y "encima" está un volumen extra de átomos.
-real(dp)::vol,min_vol,z
-real(dp),intent(out)::rho
-type(atom_dclist), pointer :: la 
-integer::i,g,image
-
-g=0
-min_vol=box(1)*box(2)*2.5_dp
-
-if(s_chunk) then
-  z=z1
-else
-  z=zmax
-endif
-
-la => sys%alist
-do i=1, sys%nat ! Para contar las partícs. por encima de z0
-la => la%next
- pa=> la%o
- if(num_images()>1 .and. atom_owner(i)/=this_image()) cycle
- if (pa%pos(3)>z0 .and. pa%pos(3)<z) g= g+1 ! piston
-enddo
-
-if(num_images()>1) then
-  co_rho_count=g
-  sync all
-  g=0
-  do image=1,num_images()
-    g=g+co_rho_count[image]
-  enddo
-  sync all
-endif
-
-vol=box(1)*box(2)*(z-z0) ! piston
-rho=g/vol
-end subroutine calc_rho
-
-
-subroutine config_chunk()
-! Leer chunk de atoms
-integer :: j
-character(10)  :: sym
-
-open(11,File='chunk.xyz')
-read(11,*) nchunk
-read(11,*)
-
-do j=1,nchunk
-  allocate(pb)
-  call pb%init()
-
-  ! Asigna propiedades al bloque de partículas
-  read(11,*) sym,pb%pos(:)
-  call pb%setsym(sym)
-  pb%force(:)=0._dp
-  pb%pos_old(:)=pb%pos(:)
-
-  ! Como sus posic. en z empiezan en z= 0, las subo en zmax+rcut para cuando
-  ! haya que agregarlas
-  pb%pos(3)=pb%pos(3) + zmax 
-  pb%pos_old(3)=pb%pos(3) + zmax
-
-  ! Agrego un átomo a un grupo chunk
-  call chunk%attach(pb)
-
-  ! Set pbc
-  pb%pbc(:)=.true.
-  pb%pbc(3)=.false.
-
-  pb=>null()
-enddo
-close (11)
-
-end subroutine config_chunk
-
-
 subroutine gcmc_run(g)
 ! Reservoir 3 - GCMC
 use gems_groups, only: atom_asign
 use gems_program_types, only: box, distance 
-use gems_constants, only: kB_ui
 use gems_errors, only: werr
 class(group)               :: g
-real(dp)                   :: r(3), vd(3), dr, v, rc, temp, beta
+real(dp)                   :: r(3), vd(3), dr, v, rc
 type(atom_dclist), pointer :: la
 type(atom),pointer         :: o, ref
 class(group),pointer       :: gp
@@ -1642,7 +1340,6 @@ enddo
 ! Attempted adjustments 
 adj: do i=1,nadj
   ref => g%alist%next%o
-  beta = sqrt(kB_ui*Tsist/ref%mass)
   call werr('No more particles',.not.associated(ref))
 
   ! Creation attempt
@@ -1684,12 +1381,6 @@ adj: do i=1,nadj
     o%uid=next_atom_uid
     call atom_asign(o,ref)
     o%pos(:)=r(:)
-    o%pos_old(:)=r(:)
-     
-    ! Give a velocity from maxwell-boltzman distribution
-    do j = 1,3
-      la%o%vel(j) = beta*gasdev()
-    enddo
 
     ! Add to the same groups of the template.
     do j=1,ref%ngr
@@ -1737,90 +1428,6 @@ enddo adj
 end subroutine gcmc_run
 
  
-subroutine bloques(g1, g2, nx, rho) 
-! Reservoir 2 - blocks of atoms added to keep bulk density
-use gems_program_types, only: tbox, box_setvars  
-use gems_groups, only: group, atom, atom_asign, atom_dclist
-class(group)    :: g1, g2
-type(atom_dclist), pointer :: la
-type(atom),pointer    :: o1,o2
-real(dp),intent(in)   ::rho
-real(dp)              :: drho
-integer               :: j
-integer, intent(in)   :: nx
-
-! Criterio para actualizar. En base a 4*sigma de desviac. estándar
-drho= rho - rhomedia
-if(abs(drho)<(rhomedia*0.186)) return ! volver a 0.25 ¿?
-
-z0 = z0 + dist
-z1 = z1 + dist
-zmax = zmax + dist
-
-! Deactivate neighboor list to speed up multiple addition
-hs%listed=.false.
-
-! copiamos los atomos que estaban en chunk a sys, con allocate
-la=>g2%alist ! apunta al chunk
-do j=1,g2%nat
-  la=>la%next
-  o1=> la%o
-  allocate(o2)
-  call o2%init()
-  next_atom_uid=next_atom_uid+1
-  o2%uid=next_atom_uid
-  call g1%attach(o2) ! Sys
-
-  ! Lista de vecinos
-  call hs_candidate%attach(o2)
-  call hs_focus%attach(o2)
-  call hs%attach(o2)
-
-  ! Si vos cambias el rcut, esto te va a hacer acordar de crear un nuevo chunk:
-  ! TODO: call wwan("Posibilidad de colision",o1%pos(3)<hs%rcut)
-
-  ! Nuevas partícs. reciben props. de otras ya existentes 
-  call atom_asign(o2, o1)
-  o2%pbc(:) = o1%pbc(:)
-  o2=>null()
-
-  ! y actualiza altura del chunk
-  o1%pos(3)=o1%pos(3)+ dist 
-  o1%pos_old(3)=o1%pos_old(3)+ dist
-enddo
-
-n= n + nx 
-
-! Agrega nuevos vecinos para los atomos agregados y los cercanos
-tbox(3,3)=zmax 
-call box_setvars()
-call sync_owned_positions()
-call sync_execution_views()
-           
-end subroutine bloques
-
-
-subroutine maxz(zmax) 
-! Reservoir 1 - piston
-! Ajusta el "máximo absoluto" en z de la caja de simulación con el mov. de partícs.
-! Hoang et al.
-real(dp)::lohi !Like a valley/bird in the sky
-real(dp),intent(inout)::zmax
-integer::i
-
-!El factor para corregir zmax y las pos(3) de las que estén sobre z0
-lohi= ((h/tau)*((rho0-rho)/rho)) 
-
-do i=1, sys%nat
- pa=>sys%a(i)%o
-   if (pa%pos(3)>z0) pa%pos(3)=pa%pos(3)-lohi*(pa%pos(3)-z0)
-enddo
-
-zmax=zmax-lohi*(zmax-z0)
-
-end subroutine maxz
-
-
 ! Integradores de posics.
 subroutine cbrownian_hs(g,h)
 ! Integrac. browniana
@@ -1945,17 +1552,8 @@ do ii = 1,g%focus%nat
     endif
 
     ! Colision con otra particula
-    if(s_piston) then
-      if(all(o2%pos(:)==o2%old_cg(:))) then
-        if(all(o1%pos(:)==o1%old_cg(:))) then
-          choques3=choques3+1
-          cycle
-        endif
-      endif
-    endif
     o2%pos(:)=o2%old_cg(:) 
     ! TODO: resort?
-    o2%acel(:)=0._dp
     o2%vel(:)=0._dp
     o2%skip=.false.
     choques=choques+1
@@ -1977,207 +1575,12 @@ choques2=max(choques2,choques-i)
 end subroutine overlap_moveback
 
 
-! Integrac. Langevin
-subroutine set_ermak(h,gama,Tsist,cc0, cc1, cc2, sdr, sdv, crv1, crv2) 
-! Constantes p/ Ermak
-real(dp),intent(in)  :: h,gama,Tsist
-real(dp),intent(out) :: cc0, cc1, cc2, sdr, sdv, crv1, crv2
-
-!En libro: xi=kB*T/m*D=gama
-! Para cambio en coef. difusión SC-SEI
-
-!Calcula las ctes.
-cc0= exp(-h*gama)
-cc1= (1._dp-cc0)/gama
-cc2= (1._dp-cc1/h)/gama
-
-!Desv. estándar
-sdr= sqrt(h/gama*(2._dp-(3._dp-4._dp*cc0+cc0*cc0)/(h*gama)))
-sdv= sqrt(1._dp-cc0*cc0)
-
-!Acá calcula el coef. de correlac. posic.-vel.
-crv1= (1._dp-cc0)*(1._dp-cc0)/(gama*sdr*sdv)
-crv2= sqrt(1._dp-(crv1*crv1))
-
-!Un factor útil :P/para la rutina que sigue
-skt=sqrt(kB_ui*Tsist)
-
-end subroutine set_ermak
-
-
-subroutine ermak_a(g,ranv) 
-!Actualiza posic., din. Langevin
-! Algoritmo sacado del libro de "Computer simulation of liquids" de Allen Chap 9, "Brownian Dnamics", Pag 263. Ed. vieja
-class(ngroup)    :: g
-class(atom), pointer        :: o1 
-type(atom_dclist), pointer :: la 
-real(dp),intent(out)       :: ranv(:,:)
-real(dp)                   :: r1 ,r2, ranr
-integer                    :: i,j
-logical                    :: depos
-
-la => g%focus%alist
-do i = 1,g%focus%nat
-  la => la%next
-  o1 => la%o 
-
-  !Para luego ver congelam.
-  o1%old_cg(:)=o1%pos(:)
- 
-  ! Para cambio SC-SEI
-  ! if (o1%pos(3)>80._dp) then
-  !    cc1= cc1_sc
-  !    cc2= cc2_sc
-  !    crv1= crv1_sc
-  !    crv2= crv2_sc
-  ! else
-  !    cc1= cc1_sei
-  !    cc2= cc2_sei
-  !    crv1= crv1_sei
-  !    crv2= crv2_sei
-  ! endif
-
-  do j = 1, 3
-    r1=gasdev()
-
-    ranr = skt/sqrt(o1%mass)*sdr*r1
-    o1%pos(j) = o1%pos(j) + cc1*o1%vel(j) + cc2*h*o1%acel(j) + ranr
-  
-    ! Me guardo un nro random para la veloc manteniendo la correlac con la posición.                      
-    r2=gasdev()
-    ranv(i,j) = skt/sqrt(o1%mass)*sdv*(crv1*r1+crv2*r2)
-  end do
-
-  call atom_pbc(o1, depos) ! ver de seleccionar forma de CG sobre electrodo
-
-  ! Para no calcular choques o deposic. sobre Li
-  ! si depositó sobre electrodo
-  if (depos) cycle
-  ! probar, luego ver sino si usar knock
- 
-  ! Mark atom to check for colisions
-  o1%skip=.false. 
-enddo
-
-end subroutine ermak_a
-
-
-subroutine ermak_b(g,ranv)
-! calcula veloc 
-class(ngroup)              :: g
-type(atom), pointer        :: o1 
-type(atom_dclist), pointer :: la 
-real(dp),intent(in)        :: ranv(:,:)
-integer                    :: i
-
-la => g%focus%alist
-
-do i = 1,g%focus%nat
-  la => la%next
-  o1 => la%o 
- 
-  if(o1%sym=='CG') cycle !Así se ahorra un cálculo
-
-  o1%vel(:) = cc0*o1%vel(:) + (cc1-cc2)*o1%acel(:) + cc2*o1%force(:)/o1%mass + ranv(i,:)
-  o1%acel(:)=o1%force(:)/o1%mass
-
-enddo
-
-end subroutine ermak_b
-
-
-subroutine fuerza(g,eps,r0) 
-! Fuerzas - potencial LJ
-use gems_program_types, only:box  
-class(ngroup)    :: g
-type(atom), pointer        :: o1, o2 
-type(atom_dclist), pointer :: la!, lb 
-real(dp)            :: vd(3),dr,aux,b,c
-real(dp),intent(in) :: eps(3,3),r0(3,3)
-integer         :: i,j,ii,jj,l,k,m
-
-la => g%focus%alist
-
-do i=1, g%focus%nat !n
-  la => la%next
-  o1 => la%o
-  o1%force(:) = 0._dp
-  o1%epot = 0._dp  
-
-enddo
-
-! Calcula interacc. (F) con las partícs. vecinas
-la => g%focus%alist
-do ii = 1, g%focus%nat
-  la => la%next 
-  o1 => la%o
-  i = o1%gid(g)
-
-  k=o1%z
-
-  do jj = 1, g%nn(i) !sobre lo vecinos
-
-    j = g%list(i,jj)
-    o2 => g%a(j)%o
-
-    ! Skip atoms in limbo
-    if(g%b_limbo) then
-      if(associated(o2,target=g%limbo)) cycle
-    endif
-         
-    m=o2%z   ! para luego poder elegir los valores de eps y r0
-    vd(:) = o1%pos(:)-o2%pos(:)
-   
-    ! PBC en x e y
-    do l=1,2       !Sin contar en z ;)
-      if (vd(l)>box(l)*.5_dp) then
-        vd(l)=vd(l)-box(l)
-      else if (vd(l)<-box(l)*.5_dp) then
-        vd(l)=vd(l)+box(l)
-      endif
-      
-      ! if (abs(vd(l))>box*.5_dp)  vd(l)=vd(l)-sign(vd(l))*box
-    enddo
-
-    if(o2%sym=='CG'.and.o1%sym=='CG') cycle ! REVISAR
-
-    dr = dot_product(vd,vd)
-
-    if(dr>r0(k,m)**2) cycle
-
-    dr=sqrt(dr)
-
-    !factores para f
-    b=r0(k,m)**6
-    c=eps(k,m)*12._dp*b 
-    c=c/(dr**7)
-    b=b/(dr**6)
-
-    !derivado el pot de LJ
-    aux=c*(b-1)    
-
-    o1%force(:)=o1%force(:)+aux*vd(:)/dr
-    o2%force(:)=o2%force(:)-aux*vd(:)/dr
-
-    aux = eps(k,m)*b*(b-2)
-
-    !el pot de LJ+epsilon
-    aux=aux+eps(k,m)  
-
-    o1%epot = o1%epot + aux*.5_dp
-    o2%epot = o2%epot + aux*.5_dp
-
-  enddo
-enddo
-
-end subroutine fuerza
 
 
 !Output
 subroutine salida()  ! Escribe los datos calc. :P
 integer  :: j, image, total_try, total_depo
 type(atom_dclist), pointer :: la 
-real(dp) :: energia
 
 call sync_owned_positions(.true.)
 output_try=try
@@ -2195,8 +1598,6 @@ depo=0
 
 if (this_image() /= 1) return
 
-energia= 0._dp
-
 ! Coords. de partíc.
 write(11,*) sys%nat ! n
 write(11,*) "info:",zmax,sys%nat
@@ -2206,25 +1607,13 @@ do j=1,sys%nat
  pa=>la%o
  write(11,*) pa%sym,pa%pos(:),pa%z
 
- energia= energia + pa%epot 
 enddo
-
-! t, Epot+Ecin 
-write(12,*) t, energia !sum(sys%a(:)%o%epot)
-
-call kion(sys,temp) 
-write(13,*)t,temp
-
-write(14,*)t,rho
 
 write(15,*)t,total_try
 write(16,*)t,total_depo
 
 flush(16)
 flush(15)
-flush(14)
-flush(13)
-flush(12)
 flush(11)
 
 end subroutine salida
@@ -2246,26 +1635,15 @@ do j=1, 3
     ! PBC en x e y
     if (o1%pos(j)>box(j)) then
        o1%pos(j)=o1%pos(j)-box(j)
-       o1%pos_old(j)=o1%pos_old(j)-box(j)
     endif  
     if (o1%pos(j)<o) then
        o1%pos(j)=o1%pos(j)+box(j)
-       o1%pos_old(j)=o1%pos_old(j)+box(j)
     endif
 
   else 
     ! Rebote en zmax
     if(o1%pos(j)>zmax) then
-      if (integrador) then
-        ! Con Ermak
-        o1%pos(3) = o1%pos(3) - 2*(o1%pos(3) - zmax)
-        o1%vel(3) = -o1%vel(3)
-
-      else
-        ! Con esferas duras
-        o1%pos(:)= o1%old_cg(:)
-      endif
-
+      o1%pos(:)= o1%old_cg(:)
     endif
 
   endif
@@ -2298,130 +1676,6 @@ endif
 end subroutine atom_pbc
 
 
-subroutine knock(list) 
-! Deposic. sobre Li ya depositado, sino, rebote brusco
-use gems_program_types, only: box
-type(ngroup)              :: list
-real(dp)                  :: ne,vd(3),dr
-integer                   :: i,ii,j,jj,l 
-type(atom),pointer        :: o1,o2
-type(atom_dclist),pointer :: la
- 
-! Por todos los pares de particulas
-
-la => list%focus%alist
-do ii = 1,list%focus%nat
-  la => la%next
-  o1 => la%o ! o1 es el único que puede ser CG
-
-  i = o1%gid(list)
-  ! tp = o1%gid(sys)
-
-  do jj = 1, list%nn(i)  ! sobre los vecinos
-
-    j = list%list(i,jj)
-    o2 => list%a(j)%o
-
-    vd(:) = o1%pos(:)-o2%pos(:)
-
-    !Condicion de imagen minima
-    do l=1,2       !Sin contar en z ;)
-       if (vd(l)>box(l)*.5_dp) then
-         vd(l)=vd(l)-box(l)
-       else if (vd(l)<-box(l)*.5_dp) then
-         vd(l)=vd(l)+box(l)
-       endif
-    enddo
-
-    dr = dot_product(vd,vd)
-
-    if(dr>list%rcut2) cycle !Sí es necesario :B
-
-    ne=ran(idum) ! nro aleatorio para decidir si congelar o no.
-    if(ne<prob) then
-       call o2%setz(3)
-
-       ! Terminac. brusca del programa si la dendrita toca el z0
-       if (o2%pos(3)>z0) stop 
-       exit
-
-    else
-
-      ! FIXME
-      ! Retorno la partícula a la solución-esto es una falla u.u
-      ! Podrían superponerse partícs. al retroceder...
-      ! Igual que Mayers
-      o2%pos(:)= o2%old_cg(:) 
-
-    endif
-
-  enddo
-
-enddo
-
-
-! Add new CG to the ref group
-la=> list%candidate%alist
-do i = 1, list%candidate%nat
-  la=> la%next
-  o1=> la%o
-  if (o1%sym/='F') cycle
-  call o1%setz(2)
-  call list%focus%attach(o1)
-  call list%attach(o1)
-enddo
-
-! ESTO ES DE LA RUTINA VIEJA - REVISAR POR LAS DUDAS ANTES DE TIRAR
-
-! Lo que sigue iba por si la posic. vieja del Li+ comparada con la del CG es gde.,
-! pasa a decidir si congela.
-! Si están "cerca" es probable que en un paso de sim.
-! anterior ya haya intentado depositar, y no vuelve a probar
-! if(m==1) then
-!    vd(:)=o2%pos_old(:)-o1%pos(:)  
-! else
-!    vd(:)=o1%pos_old(:)-o2%pos(:)  
-! endif
-
-! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
-end subroutine knock
-
- 
-subroutine kion(g,temp)
-! Calcula T
-class(group)    :: g
-type(atom), pointer        :: o1 
-type(atom_dclist), pointer :: la
-real(dp),intent(out)::temp
-real(dp)::vd,vdn,vdac !módulo de la vel., y donde acumulo
-integer::i,j
-
-la => g%alist
-
-vdac=0. !inicia la cuenta
-j=0
-
-do i=1,g%nat
-
-la => la%next
-o1 => la%o
-
-if(o1%sym=='CG') cycle !No considera Li metálico
-j=j+1 !Cuenta los iones en mov.
-
-vd=dot_product(o1%vel(:),o1%vel(:))
-vd=vd*o1%mass !vel. al cuadrado ;) *porq. |v|=sqrt vd...
-
-
-vdn=vdac+vd !acumula m*vel**2
-vdac=vdn !acá como que guardo en vdac el valor de vdn para la próx.
-
-!vdac=vdac+vd !empiezo a acumular m*vel**2
-enddo
-
-temp=vdac/(j*3._dp*kB_ui)
-
-end subroutine kion
 
 
 function gasdev() !Nro aleat.
