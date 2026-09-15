@@ -82,8 +82,8 @@ program dana
   real(dp),allocatable:: recv_pos(:,:), recv_old_cg(:,:), recv_pos_old(:,:)
   real(dp),allocatable:: recv_vel(:,:), recv_acel(:,:), recv_force(:,:)
   integer,allocatable :: atom_owner(:)
-  integer,allocatable :: co_uid(:)[:], co_element(:)[:]
-  integer,allocatable :: recv_uid(:), recv_element(:), uid_to_sys(:)
+  integer,allocatable :: co_uid(:)[:], co_element(:)[:], co_new_owner(:)[:]
+  integer,allocatable :: recv_uid(:), recv_element(:), recv_owner(:), uid_to_sys(:)
   logical,allocatable :: atom_visible(:), co_skip(:)[:]
   logical,allocatable :: recv_skip(:)
   logical             :: focus_dirty = .false.
@@ -161,6 +161,9 @@ program dana
   call hs_candidate%init()
   call hs%init()
   call hs%bind_groups(hs_focus, hs_candidate)
+  ! Halo churn reuses detached slots, so avoid compacting the candidate index
+  ! while its membership is being updated incrementally.
+  hs%candidate%aupd=1._dp
   call hs%setrc(3.2_dp) ! Maximo radio de corte
 
   ! Configure integrator and reservoir for the run.
@@ -616,6 +619,7 @@ read(11,*)
 if(allocated(atom_owner)) deallocate(atom_owner)
 if(allocated(co_element)) deallocate(co_element)
 if(allocated(co_uid)) deallocate(co_uid)
+if(allocated(co_new_owner)) deallocate(co_new_owner)
 if(allocated(atom_visible)) deallocate(atom_visible)
 if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
@@ -632,11 +636,13 @@ if(allocated(recv_acel)) deallocate(recv_acel)
 if(allocated(recv_force)) deallocate(recv_force)
 if(allocated(recv_element)) deallocate(recv_element)
 if(allocated(recv_uid)) deallocate(recv_uid)
+if(allocated(recv_owner)) deallocate(recv_owner)
 if(allocated(uid_to_sys)) deallocate(uid_to_sys)
 if(allocated(recv_skip)) deallocate(recv_skip)
 allocate(atom_owner(n))
 allocate(co_element(n)[*])
 allocate(co_uid(n)[*])
+allocate(co_new_owner(n)[*])
 allocate(atom_visible(n))
 allocate(co_skip(n)[*])
 allocate(co_pos(3,n)[*])
@@ -644,10 +650,11 @@ allocate(co_old_cg(3,n)[*],co_pos_old(3,n)[*])
 allocate(co_vel(3,n)[*],co_acel(3,n)[*],co_force(3,n)[*])
 allocate(recv_pos(3,n),recv_old_cg(3,n),recv_pos_old(3,n))
 allocate(recv_vel(3,n),recv_acel(3,n),recv_force(3,n))
-allocate(recv_uid(n),recv_element(n),recv_skip(n))
+allocate(recv_uid(n),recv_element(n),recv_owner(n),recv_skip(n))
   atom_owner(:)=1
   co_element(:)=119
   co_uid(:)=0
+  co_new_owner(:)=1
   atom_visible(:)=.true.
   co_skip(:)=.false.
   co_pos(:,:)=0._dp
@@ -908,31 +915,43 @@ end select
 end function global_domain_length
 
 
-subroutine sync_owned_positions()
+subroutine sync_owned_positions(global_snapshot)
 ! Pack each owner's records contiguously so remote state arrives in a few array
 ! transfers instead of many scalar coindexed reads.
 use gems_errors, only: werr
+logical,intent(in),optional :: global_snapshot
 type(atom_dclist), pointer :: la
 type(atom), pointer        :: received_atom
-integer                   :: i, owner, nrecv, slot
+integer                   :: i, owner, nrecv, slot, new_owner
+logical                   :: gather_all
 
 call prof_start(prof_sync_pos_tick)
 call ensure_sync_storage()
 call rebuild_uid_index()
+gather_all=.false.
+if(present(global_snapshot)) gather_all=global_snapshot
 if(num_images()==1) then
   call refresh_domain_ownership()
   call prof_stop(prof_sync_pos_tick,prof_sync_pos,prof_n_sync_pos)
   return
 endif
 
+do i=1,sys%nat
+  atom_visible(i)=atom_owner(i)==this_image()
+enddo
 co_owned_count=0
 la => sys%alist
 do i=1,sys%nat
   la => la%next
   if(atom_owner(i) /= this_image()) cycle
+  new_owner=owner_image_for_position(la%o%pos)
+  if(.not.gather_all .and. new_owner==this_image()) then
+    if(.not.position_near_owner_boundary(la%o%pos,this_image())) cycle
+  endif
   co_owned_count=co_owned_count+1
   slot=co_owned_count
   co_uid(slot) = la%o%uid
+  co_new_owner(slot) = new_owner
   co_pos(:,slot) = la%o%pos(:)
   co_old_cg(:,slot) = la%o%old_cg(:)
   co_pos_old(:,slot) = la%o%pos_old(:)
@@ -949,6 +968,7 @@ do owner=1,num_images()
   nrecv=co_owned_count[owner]
   if(nrecv==0) cycle
   recv_uid(:nrecv)=co_uid(:nrecv)[owner]
+  recv_owner(:nrecv)=co_new_owner(:nrecv)[owner]
   recv_pos(:,:nrecv)=co_pos(:,:nrecv)[owner]
   recv_old_cg(:,:nrecv)=co_old_cg(:,:nrecv)[owner]
   recv_pos_old(:,:nrecv)=co_pos_old(:,:nrecv)[owner]
@@ -973,6 +993,8 @@ do owner=1,num_images()
     received_atom%acel(:)=recv_acel(:,slot)
     received_atom%force(:)=recv_force(:,slot)
     received_atom%skip=recv_skip(slot)
+    atom_owner(i)=recv_owner(slot)
+    if(recv_owner(slot)==this_image() .or. candidate_atom(received_atom)) atom_visible(i)=.true.
   enddo
 enddo
 
@@ -982,6 +1004,33 @@ call refresh_domain_ownership()
 call prof_stop(prof_sync_pos_tick, prof_sync_pos, prof_n_sync_pos)
 
 end subroutine sync_owned_positions
+
+
+logical function position_near_owner_boundary(r,owner) result(near_boundary)
+real(dp),intent(in) :: r(3)
+integer,intent(in)  :: owner
+real(dp)            :: coordinate, halo, length, lower, upper, width
+integer             :: axis, coord(3)
+
+near_boundary=.false.
+halo=hs%rcut+nb_dcut
+call image_coordinates(owner,coord)
+do axis=1,3
+  if(domain_dims(axis)==1) cycle
+  length=global_domain_length(axis)
+  coordinate=r(axis)
+  if(domain_periodic(axis)) coordinate=modulo(coordinate-domain_global_lo(axis),length)+domain_global_lo(axis)
+  width=length/real(domain_dims(axis),dp)
+  lower=domain_global_lo(axis)+real(coord(axis),dp)*width
+  upper=lower+width
+  if((coordinate>=lower-halo .and. coordinate<lower+halo) .or. &
+    (coordinate>=upper-halo .and. coordinate<upper+halo)) then
+    near_boundary=.true.
+    return
+  endif
+enddo
+
+end function position_near_owner_boundary
 
 
 subroutine rebuild_uid_index()
@@ -1012,39 +1061,52 @@ subroutine refresh_domain_ownership()
 type(atom_dclist), pointer :: la
 integer                   :: i
 integer                   :: new_owner
-logical                   :: rebuild_focus
+logical                   :: rebuild_focus, desired_candidate, desired_focus
 
 if(.not.allocated(atom_owner)) return
 
 rebuild_focus = focus_dirty .or. num_images() > 1
 
-la => sys%alist
-do i=1,sys%nat
-  la => la%next
-  new_owner = owner_image_for_position(la%o%pos)
-  if(atom_owner(i) /= new_owner) rebuild_focus = .true.
-  atom_owner(i) = new_owner
-enddo
+if(num_images()==1) then
+  la => sys%alist
+  do i=1,sys%nat
+    la => la%next
+    new_owner = owner_image_for_position(la%o%pos)
+    if(atom_owner(i) /= new_owner) rebuild_focus = .true.
+    atom_owner(i) = new_owner
+  enddo
+endif
 
 if(.not.rebuild_focus) then
   return
 endif
 
-call hs_focus%detach_all()
-call hs_candidate%detach_all()
+! Positions may have changed since the previous cell sort. Invalidate the cell
+! chains before removing the comparatively few atoms whose role changed.
+hs%candidate%tessellated=.false.
 
-if(allocated(atom_visible)) atom_visible(:) = .false.
+if(num_images()==1 .and. allocated(atom_visible)) atom_visible(:) = .true.
 la => sys%alist
 do i=1,sys%nat
   la => la%next
-  if(candidate_atom(la%o)) then
-    if(allocated(atom_visible)) atom_visible(i) = .true.
-    call hs_candidate%attach(la%o)
+  desired_candidate=atom_visible(i) .and. candidate_atom(la%o)
+  desired_focus=la%o%sym /= 'CG' .and. atom_owner(i) == this_image()
+
+  if(desired_candidate) then
+    if(la%o%gri(hs_candidate)<1) call hs_candidate%attach(la%o)
+    if(la%o%gri(hs%candidate)<1) call hs%candidate%attach(la%o)
+  else
+    if(la%o%gri(hs%candidate)>0) call hs%candidate%detach(la%o)
+    if(la%o%gri(hs_candidate)>0) call hs_candidate%detach(la%o)
   endif
-  if(this_image() == 1) then
-    if(allocated(atom_visible)) atom_visible(i) = .true.
+
+  if(desired_focus) then
+    if(la%o%gri(hs_focus)<1) call hs_focus%attach(la%o)
+    if(la%o%gri(hs%focus)<1) call hs%focus%attach(la%o)
+  else
+    if(la%o%gri(hs%focus)>0) call hs%focus%detach(la%o)
+    if(la%o%gri(hs_focus)>0) call hs_focus%detach(la%o)
   endif
-  if(la%o%sym /= 'CG' .and. atom_owner(i) == this_image()) call hs_focus%attach(la%o)
 enddo
 
 hs%listed = .false.
@@ -1405,6 +1467,7 @@ if(allocated(atom_visible)) deallocate(atom_visible)
 sync all
 if(allocated(co_element)) deallocate(co_element)
 if(allocated(co_uid)) deallocate(co_uid)
+if(allocated(co_new_owner)) deallocate(co_new_owner)
 if(allocated(co_skip)) deallocate(co_skip)
 if(allocated(co_pos)) deallocate(co_pos)
 if(allocated(co_old_cg)) deallocate(co_old_cg)
@@ -1420,12 +1483,14 @@ if(allocated(recv_acel)) deallocate(recv_acel)
 if(allocated(recv_force)) deallocate(recv_force)
 if(allocated(recv_element)) deallocate(recv_element)
 if(allocated(recv_uid)) deallocate(recv_uid)
+if(allocated(recv_owner)) deallocate(recv_owner)
 if(allocated(uid_to_sys)) deallocate(uid_to_sys)
 if(allocated(recv_skip)) deallocate(recv_skip)
 
 allocate(atom_owner(sys%nat))
 allocate(co_element(sys%nat)[*])
 allocate(co_uid(sys%nat)[*])
+allocate(co_new_owner(sys%nat)[*])
 allocate(atom_visible(sys%nat))
 allocate(co_skip(sys%nat)[*])
 allocate(co_pos(3,sys%nat)[*])
@@ -1433,7 +1498,7 @@ allocate(co_old_cg(3,sys%nat)[*],co_pos_old(3,sys%nat)[*])
 allocate(co_vel(3,sys%nat)[*],co_acel(3,sys%nat)[*],co_force(3,sys%nat)[*])
 allocate(recv_pos(3,sys%nat),recv_old_cg(3,sys%nat),recv_pos_old(3,sys%nat))
 allocate(recv_vel(3,sys%nat),recv_acel(3,sys%nat),recv_force(3,sys%nat))
-allocate(recv_uid(sys%nat),recv_element(sys%nat),recv_skip(sys%nat))
+allocate(recv_uid(sys%nat),recv_element(sys%nat),recv_owner(sys%nat),recv_skip(sys%nat))
 co_pos(:,:) = 0._dp
 co_old_cg(:,:) = 0._dp
 co_pos_old(:,:) = 0._dp
@@ -1442,6 +1507,7 @@ co_acel(:,:) = 0._dp
 co_force(:,:) = 0._dp
 co_element(:) = 119
 co_uid(:) = 0
+co_new_owner(:) = 1
 co_skip(:) = .false.
 atom_visible(:) = .true.
 
@@ -2113,6 +2179,7 @@ integer  :: j, image, total_try, total_depo
 type(atom_dclist), pointer :: la 
 real(dp) :: energia
 
+call sync_owned_positions(.true.)
 output_try=try
 output_depo=depo
 sync all
