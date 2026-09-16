@@ -90,14 +90,31 @@ halos and migration records; output checkpoints request a complete snapshot.
 The current implementation still polls every image rather than only Cartesian
 neighbors.
 
-GCMC is currently validated only in single-image mode. A multi-image run fails
-because each image consumes a different stateful random stream and can create or
-delete a different atom. The next HPC checkpoint must use decomposition-stable
-random event keys and synchronize GCMC operations before changing `sys`.
+GCMC is distributed over the accessible interior of each owned reservoir
+patch. A safety strip of `hs%rcut/2` is excluded at every inter-image face, so
+simultaneous trial centers from neighboring patches cannot overlap. The global
+`nadj` budget is apportioned by accessible volume with a largest-remainder rule;
+therefore increasing the image count does not multiply the total attempt rate.
+Each patch uses its accessible volume and eligible owned-particle count in the
+insertion/deletion acceptance ratios.
 
-Physical atoms carry a persistent `uid` for coarray records. GEMS `gid` and
-`gri` remain execution-view and group-membership indices and must not be used as
-persistent distributed identities.
+Images first generate accepted operations against a virtual local state. They
+then exchange compact ordered create/delete records, assign new UIDs by image
+prefix, and replay the same record stream. The current checkpoint still keeps
+the physical atom set replicated for compatibility with existing synchronization,
+but it no longer broadcasts complete state for each GCMC decision. Run output
+reports patch volume, accessible volume, and local attempt count. These values
+must be monitored under strong scaling because fixed safety margins occupy a
+larger fraction of smaller patches.
+
+Multi-image random streams are seeded per image. Parallel trajectories are not
+expected to match the serial trajectory; reservoir density, concentration
+profiles, acceptance statistics, and deposition flux require ensemble-level
+validation.
+
+Physical atoms carry a persistent `uid` for coarray records. GEMS `gid(sys)` is
+used only to index local owner/visibility arrays, and `gri` is used for local
+group membership. Neither is a persistent distributed identity.
 
 To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
 in the same folder.

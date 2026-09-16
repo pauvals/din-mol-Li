@@ -60,9 +60,15 @@ program dana
   integer,allocatable :: recv_uid(:), recv_element(:), recv_owner(:), uid_to_sys(:)
   logical,allocatable :: atom_visible(:), co_skip(:)[:]
   logical,allocatable :: recv_skip(:)
+  integer,allocatable :: co_gcmc_kind(:)[:], co_gcmc_uid(:)[:]
+  real(dp),allocatable:: co_gcmc_pos(:,:)[:]
   logical             :: focus_dirty = .false.
   integer             :: next_atom_uid=0
   integer             :: co_owned_count[*]=0
+  integer             :: co_gcmc_count[*]=0, co_gcmc_creations[*]=0
+  real(dp)            :: co_gcmc_active_volume[*]=0._dp
+  real(dp)            :: gcmc_patch_volume=0._dp, gcmc_accessible_volume=0._dp
+  integer             :: gcmc_local_attempts=0
   integer             :: overlap_round_actions[*]=0, overlap_round_unresolved[*]=0
   integer             :: output_try[*]=0, output_depo[*]=0
   integer             :: overlap_parallel_rounds=0, overlap_parallel_residuals=0
@@ -108,6 +114,7 @@ program dana
   ! Leer run parameters:  semilla, probabilidad, nro. pasos
   ! y otros valores iniciales
   call entrada()
+  if(num_images()>1) idum=idum-104729*(this_image()-1)
         
   ! Init lista para choques de esferas duras
   call hs_focus%init()
@@ -257,6 +264,8 @@ program dana
   call wstd(); write(logunit,'("numero total de choques en 2da vuelta: ",i0)') choques2
   call wstd(); write(logunit,'("numero total de choques sin solucion: ",i0)') choques3
   call wstd(); write(logunit,'("MSD maximo en x-y: ",e10.3)') msd_max
+  call wstd(); write(logunit,'("GCMC patch/access volume: ",f12.3," / ",f12.3, &
+    & "; local attempts: ",i0)') gcmc_patch_volume, gcmc_accessible_volume, gcmc_local_attempts
   call report_profile()
 
 
@@ -435,6 +444,13 @@ call box_setvars()
 open(15,File='movedor.ini')
 read(15,*) act, nadj
 close(15)
+
+allocate(co_gcmc_kind(max(1,nadj))[*])
+allocate(co_gcmc_uid(max(1,nadj))[*])
+allocate(co_gcmc_pos(3,max(1,nadj))[*])
+co_gcmc_kind(:)=0
+co_gcmc_uid(:)=0
+co_gcmc_pos(:,:)=0._dp
 end subroutine config_run
 
 
@@ -511,7 +527,7 @@ do i=1,n
   ! Agrego atomos a los grupos
   ! NOTA: hs%attach tiene que estar al final
   ! para que ande la lista de vecinos
-  atom_owner(i) = owner_image_for_position(pa%pos)
+  atom_owner(pa%gid(sys)) = owner_image_for_position(pa%pos)
 
   if (candidate_atom(pa)) call hs_candidate%attach(pa)
   if (pa%sym/='CG') then
@@ -723,7 +739,7 @@ use gems_errors, only: werr
 logical,intent(in),optional :: global_snapshot
 type(atom_dclist), pointer :: la
 type(atom), pointer        :: received_atom
-integer                   :: i, owner, nrecv, slot, new_owner
+integer                   :: i, gid, owner, nrecv, slot, new_owner
 logical                   :: gather_all
 
 call prof_start(prof_sync_pos_tick)
@@ -737,14 +753,19 @@ if(num_images()==1) then
   return
 endif
 
+atom_visible(:)=.false.
+la=>sys%alist
 do i=1,sys%nat
-  atom_visible(i)=atom_owner(i)==this_image()
+  la=>la%next
+  gid=la%o%gid(sys)
+  atom_visible(gid)=atom_owner(gid)==this_image()
 enddo
 co_owned_count=0
 la => sys%alist
 do i=1,sys%nat
   la => la%next
-  if(atom_owner(i) /= this_image()) cycle
+  gid=la%o%gid(sys)
+  if(atom_owner(gid) /= this_image()) cycle
   new_owner=owner_image_for_position(la%o%pos)
   if(.not.gather_all .and. new_owner==this_image()) then
     if(.not.position_near_owner_boundary(la%o%pos,this_image())) cycle
@@ -779,7 +800,12 @@ do owner=1,num_images()
     i=uid_to_sys(recv_uid(slot))
     call werr('Unknown atom UID in coarray snapshot',i<1)
     received_atom=>sys%a(i)%o
-    call werr('Coarray atom ownership mismatch',atom_owner(i)/=owner)
+    if(atom_owner(i)/=owner) then
+      call wstd(); write(logunit,'("GCMC/domain ownership mismatch: image=",i0," uid=",i0, &
+        & " sender=",i0," local_owner=",i0," sys_gid=",i0)') &
+        this_image(),recv_uid(slot),owner,atom_owner(i),i
+      call werr('Coarray atom ownership mismatch',.true.)
+    endif
     if(received_atom%z/=recv_element(slot)) call received_atom%setz(recv_element(slot))
     received_atom%pos(:)=recv_pos(:,slot)
     received_atom%old_cg(:)=recv_old_cg(:,slot)
@@ -851,7 +877,7 @@ subroutine refresh_domain_ownership()
 ! Recompute Cartesian ownership from current replicated positions and rebuild
 ! the local focus group consumed by the neighbor view.
 type(atom_dclist), pointer :: la
-integer                   :: i
+integer                   :: i, gid
 integer                   :: new_owner
 logical                   :: rebuild_focus, desired_candidate, desired_focus
 
@@ -863,9 +889,10 @@ if(num_images()==1) then
   la => sys%alist
   do i=1,sys%nat
     la => la%next
+    gid=la%o%gid(sys)
     new_owner = owner_image_for_position(la%o%pos)
-    if(atom_owner(i) /= new_owner) rebuild_focus = .true.
-    atom_owner(i) = new_owner
+    if(atom_owner(gid) /= new_owner) rebuild_focus = .true.
+    atom_owner(gid) = new_owner
   enddo
 endif
 
@@ -881,8 +908,9 @@ if(num_images()==1 .and. allocated(atom_visible)) atom_visible(:) = .true.
 la => sys%alist
 do i=1,sys%nat
   la => la%next
-  desired_candidate=atom_visible(i) .and. candidate_atom(la%o)
-  desired_focus=la%o%sym /= 'CG' .and. atom_owner(i) == this_image()
+  gid=la%o%gid(sys)
+  desired_candidate=atom_visible(gid) .and. candidate_atom(la%o)
+  desired_focus=la%o%sym /= 'CG' .and. atom_owner(gid) == this_image()
 
   if(desired_candidate) then
     if(la%o%gri(hs_candidate)<1) call hs_candidate%attach(la%o)
@@ -1239,7 +1267,7 @@ integer                    :: i, nold
 if(allocated(atom_owner) .and. allocated(co_uid) .and. allocated(co_element) .and. &
   allocated(atom_visible) .and. allocated(co_skip) .and. allocated(co_pos) .and. &
   allocated(co_old_cg) .and. allocated(co_vel)) then
-  if(size(atom_owner) == sys%nat .and. size(atom_visible) == sys%nat .and. &
+  if(size(atom_owner) >= sys%amax .and. size(atom_visible) >= sys%amax .and. &
     size(co_pos,2) == sys%nat) return
 endif
 
@@ -1271,11 +1299,11 @@ if(allocated(recv_owner)) deallocate(recv_owner)
 if(allocated(uid_to_sys)) deallocate(uid_to_sys)
 if(allocated(recv_skip)) deallocate(recv_skip)
 
-allocate(atom_owner(sys%nat))
+allocate(atom_owner(size(sys%a)))
 allocate(co_element(sys%nat)[*])
 allocate(co_uid(sys%nat)[*])
 allocate(co_new_owner(sys%nat)[*])
-allocate(atom_visible(sys%nat))
+allocate(atom_visible(size(sys%a)))
 allocate(co_skip(sys%nat)[*])
 allocate(co_pos(3,sys%nat)[*])
 allocate(co_old_cg(3,sys%nat)[*],co_vel(3,sys%nat)[*])
@@ -1288,16 +1316,16 @@ co_element(:) = 119
 co_uid(:) = 0
 co_new_owner(:) = 1
 co_skip(:) = .false.
-atom_visible(:) = .true.
+atom_visible(:) = .false.
 
 atom_owner(:) = 1
-if(nold > 0) atom_owner(:min(nold,sys%nat)) = old_owner(:min(nold,sys%nat))
+if(nold > 0) atom_owner(:min(nold,size(atom_owner))) = old_owner(:min(nold,size(atom_owner)))
 
 if(sys%nat > nold) then
   la => sys%alist
   do i=1,sys%nat
     la => la%next
-    if(i > nold) atom_owner(i) = owner_image_for_position(la%o%pos)
+    if(la%o%gid(sys) > nold) atom_owner(la%o%gid(sys)) = owner_image_for_position(la%o%pos)
   enddo
 endif
 
@@ -1309,123 +1337,304 @@ end subroutine ensure_sync_storage
 
 ! Reservorios
 subroutine gcmc_run(g)
-! Reservoir 3 - GCMC
-use gems_groups, only: atom_asign
-use gems_program_types, only: box, distance 
+! Domain-local GCMC. Proposals are generated against a virtual local state,
+! then accepted create/delete records are replayed in the same global order on
+! every image. Safety margins keep concurrent trial insertions noninteracting.
+use gems_program_types, only: distance
 use gems_errors, only: werr
 class(group)               :: g
-real(dp)                   :: r(3), vd(3), dr, v, rc
+real(dp)                   :: r(3), vd(3), dr, rc
+real(dp)                   :: active_lo(3), active_hi(3), active_volume
+real(dp)                   :: total_active_volume, raw_attempts, my_fraction
+real(dp)                   :: other_raw, other_fraction, eps_fraction
+real(dp),allocatable       :: eligible_pos(:,:)
 type(atom_dclist), pointer :: la
 type(atom),pointer         :: o, ref
-class(group),pointer       :: gp
-integer                    :: i,j,n,m
+integer,allocatable        :: eligible_uid(:)
+integer                    :: i,j,n,m,owner,kind,uid
+integer                    :: base_attempts,total_base,remaining,fraction_rank
+integer                    :: uid_base,uid_prefix,total_creations
+integer                    :: max_eligible
+logical                    :: overlaps
  
 rc=hs%rcut
-           
-! Compute volume
-v=box(1)*box(2)*(zmax-z0)
-     
-! Count particles in the control volume
+
+call gcmc_accessible_bounds(active_lo,active_hi,gcmc_patch_volume,active_volume)
+gcmc_accessible_volume=active_volume
+co_gcmc_active_volume=active_volume
+sync all
+
+total_active_volume=0._dp
+do owner=1,num_images()
+  total_active_volume=total_active_volume+co_gcmc_active_volume[owner]
+enddo
+call werr('GCMC safety margins leave no accessible reservoir volume',total_active_volume<=0._dp)
+
+! Keep exactly nadj global attempts while distributing them in proportion to
+! accessible volume. Largest-remainder assignment avoids stochastic rounding.
+raw_attempts=real(nadj,dp)*active_volume/total_active_volume
+base_attempts=floor(raw_attempts)
+total_base=0
+do owner=1,num_images()
+  total_base=total_base+floor(real(nadj,dp)*co_gcmc_active_volume[owner]/total_active_volume)
+enddo
+remaining=nadj-total_base
+my_fraction=raw_attempts-real(base_attempts,dp)
+fraction_rank=1
+eps_fraction=32._dp*epsilon(1._dp)
+do owner=1,num_images()
+  if(owner==this_image()) cycle
+  other_raw=real(nadj,dp)*co_gcmc_active_volume[owner]/total_active_volume
+  other_fraction=other_raw-real(floor(other_raw),dp)
+  if(other_fraction>my_fraction+eps_fraction .or. &
+    (abs(other_fraction-my_fraction)<=eps_fraction .and. owner<this_image())) fraction_rank=fraction_rank+1
+enddo
+gcmc_local_attempts=base_attempts
+if(fraction_rank<=remaining) gcmc_local_attempts=gcmc_local_attempts+1
+
+co_gcmc_count=0
+co_gcmc_creations=0
+co_gcmc_kind(:)=0
+co_gcmc_uid(:)=0
+co_gcmc_pos(:,:)=0._dp
+
+max_eligible=max(1,g%nat+gcmc_local_attempts)
+allocate(eligible_uid(max_eligible),eligible_pos(3,max_eligible))
+
+! Build the particles eligible for the reverse deletion proposal. Particles
+! outside the accessible region remain overlap obstacles but cannot be deleted.
 n=0
 la=>g%alist
 do j=1,g%nat
   la=>la%next
-  if(la%o%pos(3)<z0.or.la%o%pos(3)>zmax) cycle
+  if(owner_image_for_position(la%o%pos)/=this_image()) cycle
+  if(.not.position_in_box(la%o%pos,active_lo,active_hi)) cycle
   n=n+1
+  eligible_uid(n)=la%o%uid
+  eligible_pos(:,n)=la%o%pos(:)
 enddo
-    
-! Point to an atom that will work as template
-! in order to add new atoms into groups.
-       
-! Attempted adjustments 
-adj: do i=1,nadj
+
+! Generate local operations without changing group/list order. This lets every
+! image replay the complete operation stream identically after one exchange.
+adj: do i=1,gcmc_local_attempts
   ref => g%alist%next%o
   call werr('No more particles',.not.associated(ref))
 
   ! Creation attempt
- if (ran(idum)<0.5) then
+  if (ran(idum)<0.5) then
               
     ! Metropolis acceptance
-    if(act*v/(n+1)<ran(idum)) cycle
+    if(act*active_volume/(n+1)<ran(idum)) cycle
        
     ! Random coordinates
-    r(1)=ran(idum)*box(1)
-    r(2)=ran(idum)*box(2)
-    r(3)=ran(idum)*(zmax-z0)+z0
+    do j=1,3
+      r(j)=active_lo(j)+ran(idum)*(active_hi(j)-active_lo(j))
+    enddo
                    
-    ! Check overlap
+    ! Check overlap against the current group, excluding virtual deletions.
+    overlaps=.false.
     la=>g%alist
     do j=1,g%nat
       la=>la%next
       o => la%o
-
-      ! ! Skip particles outside the control volume.
-      ! FIXME: consider PBC
-      ! if(o%pos(3)<z0-rc) cycle
-      ! if(o%pos(3)>zmax+rc) cycle
-
-      ! Skip if overlapping
+      if(gcmc_uid_deleted(o%uid,co_gcmc_count)) cycle
       vd(:) = distance(o%pos,r,o%pbc)
       dr = dot_product(vd,vd)
-      if(dr<rc*rc) cycle adj
-
+      if(dr<rc*rc) then
+        overlaps=.true.
+        exit
+      endif
     enddo
+    if(overlaps) cycle
 
-    ! Add particle
+    ! Provisional creations are not in the physical groups yet.
+    do j=1,n
+      if(eligible_uid(j)>=0) cycle
+      vd(:)=distance(eligible_pos(:,j),r,[.true.,.true.,.false.])
+      if(dot_product(vd,vd)<rc*rc) then
+        overlaps=.true.
+        exit
+      endif
+    enddo
+    if(overlaps) cycle
+
+    co_gcmc_count=co_gcmc_count+1
+    co_gcmc_creations=co_gcmc_creations+1
+    co_gcmc_kind(co_gcmc_count)=1
+    co_gcmc_uid(co_gcmc_count)=-co_gcmc_creations
+    co_gcmc_pos(:,co_gcmc_count)=r(:)
     n=n+1
-
-    ! Initialize particle from template.
-    allocate(o)
-    call o%init()
-    next_atom_uid=next_atom_uid+1
-    o%uid=next_atom_uid
-    call atom_asign(o,ref)
-    o%pos(:)=r(:)
-
-    ! Add to the same groups of the template.
-    do j=1,ref%ngr
-      gp => ref%gro(j)
-      call gp%attach(o)
-    enddo
-        
-    ! Free pointer
-    o=>null()
+    eligible_uid(n)=-co_gcmc_creations
+    eligible_pos(:,n)=r(:)
          
   ! Destruction attempt
   else 
             
     ! Metropolis acceptance
-    if(n/(v*act)<ran(idum)) cycle
+    if(real(n,dp)/(active_volume*act)<ran(idum)) cycle
                 
     ! Choose a particle
     m=floor(ran(idum)*n)+1
     if(m>n) m=n
+    call werr('Chosen particle does not exist',m<1 .or. m>n)
 
-    la=>g%alist
-    do j=1,g%nat
-      la=>la%next
-      o => la%o
-
-      ! Skip particles outside the control volume.
-      if(o%pos(3)<z0) cycle
-      if(o%pos(3)>zmax) cycle
-
-      m=m-1  
-      if(m==0) exit
-    enddo
-    call werr('Chosen particle does not exists',m>0)
-            
-    ! Remove particle
+    co_gcmc_count=co_gcmc_count+1
+    co_gcmc_kind(co_gcmc_count)=-1
+    co_gcmc_uid(co_gcmc_count)=eligible_uid(m)
+    co_gcmc_pos(:,co_gcmc_count)=eligible_pos(:,m)
     n=n-1
-    call o%dest()
-    deallocate(o)
+    if(m<=n) then
+      eligible_uid(m:n)=eligible_uid(m+1:n+1)
+      eligible_pos(:,m:n)=eligible_pos(:,m+1:n+1)
+    endif
        
   endif 
-   
 enddo adj
-      
-           
+
+! Assign compact, globally unique UIDs by image-prefix after proposal counts
+! are known. Temporary negative UIDs also let a later local deletion refer to a
+! creation from the same batch.
+sync all
+uid_base=next_atom_uid
+uid_prefix=0
+do owner=1,this_image()-1
+  uid_prefix=uid_prefix+co_gcmc_creations[owner]
+enddo
+total_creations=uid_prefix
+do owner=this_image(),num_images()
+  total_creations=total_creations+co_gcmc_creations[owner]
+enddo
+do i=1,co_gcmc_count
+  if(co_gcmc_uid(i)<0) co_gcmc_uid(i)=uid_base+uid_prefix-co_gcmc_uid(i)
+enddo
+next_atom_uid=uid_base+total_creations
+sync all
+
+do owner=1,num_images()
+  do i=1,co_gcmc_count[owner]
+    kind=co_gcmc_kind(i)[owner]
+    uid=co_gcmc_uid(i)[owner]
+    r(:)=co_gcmc_pos(:,i)[owner]
+    call werr('Invalid GCMC operation kind',kind/=-1 .and. kind/=1)
+    if(kind==1) then
+      call gcmc_apply_creation(g,uid,r)
+    else
+      call gcmc_apply_deletion(uid)
+    endif
+  enddo
+enddo
+
+call ensure_sync_storage()
+la=>sys%alist
+do i=1,sys%nat
+  la=>la%next
+  atom_owner(la%o%gid(sys))=owner_image_for_position(la%o%pos)
+enddo
+focus_dirty=.true.
+
+deallocate(eligible_uid,eligible_pos)
+
 end subroutine gcmc_run
+
+
+subroutine gcmc_accessible_bounds(active_lo,active_hi,patch_volume,active_volume)
+real(dp),intent(out) :: active_lo(3), active_hi(3), patch_volume, active_volume
+real(dp)             :: reservoir_lo(3), reservoir_hi(3), margin, scale
+integer              :: axis
+
+reservoir_lo=[o,o,z0]
+reservoir_hi=[xi,yi,zmax]
+active_lo=max(domain_lo,reservoir_lo)
+active_hi=min(domain_hi,reservoir_hi)
+patch_volume=product(max(0._dp,active_hi-active_lo))
+margin=0.5_dp*hs%rcut
+scale=max(1._dp,maxval(abs(domain_global_hi-domain_global_lo)))
+
+do axis=1,3
+  if(active_hi(axis)<=active_lo(axis)) cycle
+  if(domain_dims(axis)==1) cycle
+  if(abs(active_lo(axis)-domain_lo(axis))<=epsilon(scale)*scale) then
+    if(domain_periodic(axis) .or. domain_coord(axis)>0) active_lo(axis)=active_lo(axis)+margin
+  endif
+  if(abs(active_hi(axis)-domain_hi(axis))<=epsilon(scale)*scale) then
+    if(domain_periodic(axis) .or. domain_coord(axis)<domain_dims(axis)-1) active_hi(axis)=active_hi(axis)-margin
+  endif
+enddo
+
+active_volume=product(max(0._dp,active_hi-active_lo))
+
+end subroutine gcmc_accessible_bounds
+
+
+logical function position_in_box(r,lo,hi) result(inside)
+real(dp),intent(in) :: r(3),lo(3),hi(3)
+
+inside=all(r>=lo) .and. all(r<=hi)
+
+end function position_in_box
+
+
+logical function gcmc_uid_deleted(uid,nops) result(deleted)
+integer,intent(in) :: uid,nops
+integer            :: op
+
+deleted=.false.
+do op=1,nops
+  if(co_gcmc_kind(op)==-1 .and. co_gcmc_uid(op)==uid) then
+    deleted=.true.
+    return
+  endif
+enddo
+
+end function gcmc_uid_deleted
+
+
+subroutine gcmc_apply_creation(g,uid,r)
+use gems_groups, only: atom_asign
+use gems_errors, only: werr
+class(group)               :: g
+integer,intent(in)         :: uid
+real(dp),intent(in)        :: r(3)
+type(atom),pointer         :: created,ref
+class(group),pointer       :: gp
+integer                    :: membership
+
+ref=>g%alist%next%o
+call werr('No GCMC template particle',.not.associated(ref))
+allocate(created)
+call created%init()
+created%uid=uid
+call atom_asign(created,ref)
+created%pos(:)=r(:)
+do membership=1,ref%ngr
+  gp=>ref%gro(membership)
+  call gp%attach(created)
+enddo
+created=>null()
+
+end subroutine gcmc_apply_creation
+
+
+subroutine gcmc_apply_deletion(uid)
+use gems_errors, only: werr
+integer,intent(in)         :: uid
+type(atom_dclist),pointer  :: list_atom
+type(atom),pointer         :: deleted
+integer                    :: item
+
+deleted=>null()
+list_atom=>sys%alist
+do item=1,sys%nat
+  list_atom=>list_atom%next
+  if(list_atom%o%uid/=uid) cycle
+  deleted=>list_atom%o
+  exit
+enddo
+call werr('GCMC deletion UID does not exist',.not.associated(deleted))
+call deleted%dest()
+deallocate(deleted)
+
+end subroutine gcmc_apply_deletion
 
  
 ! Integradores de posics.
