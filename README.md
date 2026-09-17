@@ -112,6 +112,9 @@ expected to match the serial trajectory; reservoir density, concentration
 profiles, acceptance statistics, and deposition flux require ensemble-level
 validation.
 
+Ready-to-submit OpenCoarrays/MPI scripts for one and two 64-core Serafin nodes
+are documented in `benchmarks/serafin/README.md`.
+
 Physical atoms carry a persistent `uid` for coarray records. GEMS `gid(sys)` is
 used only to index local owner/visibility arrays, and `gri` is used for local
 group membership. Neither is a persistent distributed identity.

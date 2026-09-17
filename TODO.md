@@ -9,6 +9,8 @@
   rebuilds in the overlap solver.
 - [x] Record repeated wall times, speedup, residual overlaps, and overlap
   rounds for the case-study poster.
+- [ ] Run and archive the one- and two-node OpenCoarrays/MPI scaling campaigns
+  on Serafin, including `scaling.csv`, metadata, raw logs, and `jobmetrics`.
 - [ ] Instrument bytes/records exchanged and per-step halo and migration
   counts.
 
