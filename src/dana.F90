@@ -52,26 +52,26 @@ program dana
   integer             :: overlap_cross_observations=0, overlap_deposition_observations=0
   integer             :: overlap_duplicate_observations=0
 
-  real(dp),allocatable:: co_pos(:,:)[:]
-  real(dp),allocatable:: co_old_cg(:,:)[:], co_vel(:,:)[:]
-  real(dp),allocatable:: recv_pos(:,:), recv_old_cg(:,:), recv_vel(:,:)
+  real(dp),allocatable:: packed_pos(:,:)[:]
+  real(dp),allocatable:: packed_rollback_pos(:,:)[:], packed_vel(:,:)[:]
+  real(dp),allocatable:: fetched_pos(:,:), fetched_rollback_pos(:,:), fetched_vel(:,:)
   integer,allocatable :: atom_owner(:)
-  integer,allocatable :: co_uid(:)[:], co_element(:)[:], co_new_owner(:)[:]
-  integer,allocatable :: recv_uid(:), recv_element(:), recv_owner(:), uid_to_sys(:)
-  logical,allocatable :: atom_visible(:), co_skip(:)[:]
-  logical,allocatable :: recv_skip(:)
-  integer,allocatable :: co_gcmc_kind(:)[:], co_gcmc_uid(:)[:]
-  real(dp),allocatable:: co_gcmc_pos(:,:)[:]
+  integer,allocatable :: packed_uid(:)[:], packed_element(:)[:], packed_target_image(:)[:]
+  integer,allocatable :: fetched_uid(:), fetched_element(:), fetched_target_image(:), uid_to_sys(:)
+  logical,allocatable :: atom_visible(:), packed_skip(:)[:]
+  logical,allocatable :: fetched_skip(:)
+  integer,allocatable :: gcmc_op_kind(:)[:], gcmc_op_uid(:)[:]
+  real(dp),allocatable:: gcmc_op_pos(:,:)[:]
   logical             :: focus_dirty = .false.
   integer             :: next_atom_uid=0
-  integer             :: co_owned_count[*]=0
-  integer             :: co_gcmc_count[*]=0, co_gcmc_creations[*]=0
-  real(dp)            :: co_gcmc_active_volume[*]=0._dp
-  real(dp)            :: overlap_step_displacement[*]=0._dp
+  integer             :: packed_count[*]=0
+  integer             :: gcmc_op_count[*]=0, gcmc_creation_count[*]=0
+  real(dp)            :: gcmc_image_active_volume[*]=0._dp
+  real(dp)            :: overlap_max_displacement2[*]=0._dp
   real(dp)            :: gcmc_patch_volume=0._dp, gcmc_accessible_volume=0._dp
   integer             :: gcmc_local_attempts=0
-  integer             :: overlap_round_actions[*]=0, overlap_round_unresolved[*]=0
-  integer             :: output_try[*]=0, output_depo[*]=0
+  integer             :: round_action_count[*]=0, round_unresolved_count[*]=0
+  integer             :: image_try_count[*]=0, image_deposition_count[*]=0
   integer             :: overlap_parallel_rounds=0, overlap_parallel_residuals=0
    
   ! GCMC
@@ -445,12 +445,12 @@ open(15,File='movedor.ini')
 read(15,*) act, nadj
 close(15)
 
-allocate(co_gcmc_kind(max(1,nadj))[*])
-allocate(co_gcmc_uid(max(1,nadj))[*])
-allocate(co_gcmc_pos(3,max(1,nadj))[*])
-co_gcmc_kind(:)=0
-co_gcmc_uid(:)=0
-co_gcmc_pos(:,:)=0._dp
+allocate(gcmc_op_kind(max(1,nadj))[*])
+allocate(gcmc_op_uid(max(1,nadj))[*])
+allocate(gcmc_op_pos(3,max(1,nadj))[*])
+gcmc_op_kind(:)=0
+gcmc_op_uid(:)=0
+gcmc_op_pos(:,:)=0._dp
 end subroutine config_run
 
 
@@ -472,41 +472,41 @@ read(11,*) n
 read(11,*)
 
 if(allocated(atom_owner)) deallocate(atom_owner)
-if(allocated(co_element)) deallocate(co_element)
-if(allocated(co_uid)) deallocate(co_uid)
-if(allocated(co_new_owner)) deallocate(co_new_owner)
+if(allocated(packed_element)) deallocate(packed_element)
+if(allocated(packed_uid)) deallocate(packed_uid)
+if(allocated(packed_target_image)) deallocate(packed_target_image)
 if(allocated(atom_visible)) deallocate(atom_visible)
-if(allocated(co_skip)) deallocate(co_skip)
-if(allocated(co_pos)) deallocate(co_pos)
-if(allocated(co_old_cg)) deallocate(co_old_cg)
-if(allocated(co_vel)) deallocate(co_vel)
-if(allocated(recv_pos)) deallocate(recv_pos)
-if(allocated(recv_old_cg)) deallocate(recv_old_cg)
-if(allocated(recv_vel)) deallocate(recv_vel)
-if(allocated(recv_element)) deallocate(recv_element)
-if(allocated(recv_uid)) deallocate(recv_uid)
-if(allocated(recv_owner)) deallocate(recv_owner)
+if(allocated(packed_skip)) deallocate(packed_skip)
+if(allocated(packed_pos)) deallocate(packed_pos)
+if(allocated(packed_rollback_pos)) deallocate(packed_rollback_pos)
+if(allocated(packed_vel)) deallocate(packed_vel)
+if(allocated(fetched_pos)) deallocate(fetched_pos)
+if(allocated(fetched_rollback_pos)) deallocate(fetched_rollback_pos)
+if(allocated(fetched_vel)) deallocate(fetched_vel)
+if(allocated(fetched_element)) deallocate(fetched_element)
+if(allocated(fetched_uid)) deallocate(fetched_uid)
+if(allocated(fetched_target_image)) deallocate(fetched_target_image)
 if(allocated(uid_to_sys)) deallocate(uid_to_sys)
-if(allocated(recv_skip)) deallocate(recv_skip)
+if(allocated(fetched_skip)) deallocate(fetched_skip)
 allocate(atom_owner(n))
-allocate(co_element(n)[*])
-allocate(co_uid(n)[*])
-allocate(co_new_owner(n)[*])
+allocate(packed_element(n)[*])
+allocate(packed_uid(n)[*])
+allocate(packed_target_image(n)[*])
 allocate(atom_visible(n))
-allocate(co_skip(n)[*])
-allocate(co_pos(3,n)[*])
-allocate(co_old_cg(3,n)[*],co_vel(3,n)[*])
-allocate(recv_pos(3,n),recv_old_cg(3,n),recv_vel(3,n))
-allocate(recv_uid(n),recv_element(n),recv_owner(n),recv_skip(n))
+allocate(packed_skip(n)[*])
+allocate(packed_pos(3,n)[*])
+allocate(packed_rollback_pos(3,n)[*],packed_vel(3,n)[*])
+allocate(fetched_pos(3,n),fetched_rollback_pos(3,n),fetched_vel(3,n))
+allocate(fetched_uid(n),fetched_element(n),fetched_target_image(n),fetched_skip(n))
   atom_owner(:)=1
-  co_element(:)=119
-  co_uid(:)=0
-  co_new_owner(:)=1
+  packed_element(:)=119
+  packed_uid(:)=0
+  packed_target_image(:)=1
   atom_visible(:)=.true.
-  co_skip(:)=.false.
-  co_pos(:,:)=0._dp
-  co_old_cg(:,:)=0._dp
-  co_vel(:,:)=0._dp
+  packed_skip(:)=.false.
+  packed_pos(:,:)=0._dp
+  packed_rollback_pos(:,:)=0._dp
+  packed_vel(:,:)=0._dp
   focus_dirty=.true.
 
 next_atom_uid=0
@@ -739,9 +739,9 @@ use gems_errors, only: werr
 logical,intent(in),optional :: global_snapshot
 logical,intent(in),optional :: incremental
 type(atom_dclist), pointer :: la
-type(atom), pointer        :: received_atom
-integer                   :: i, gid, item, owner, nrecv, slot, new_owner, pack_count
-logical                   :: gather_all,fast_mode,membership_changed,receive_state
+type(atom), pointer        :: local_atom
+integer                   :: i, gid, item, source_image, record_count, record, target_image, scan_count
+logical                   :: gather_all,fast_mode,membership_changed,fetch_payload
 
 call prof_start(prof_sync_pos_tick)
 call ensure_sync_storage()
@@ -766,73 +766,73 @@ if(.not.fast_mode) then
     atom_visible(gid)=atom_owner(gid)==this_image()
   enddo
 endif
-co_owned_count=0
+packed_count=0
 if(fast_mode) then
   la=>hs_focus%alist
-  pack_count=hs_focus%nat
+  scan_count=hs_focus%nat
 else
   la=>sys%alist
-  pack_count=sys%nat
+  scan_count=sys%nat
 endif
-do item=1,pack_count
+do item=1,scan_count
   la => la%next
   gid=la%o%gid(sys)
   if(atom_owner(gid) /= this_image()) cycle
-  new_owner=owner_image_for_position(la%o%pos)
-  if(.not.gather_all .and. new_owner==this_image()) then
+  target_image=owner_image_for_position(la%o%pos)
+  if(.not.gather_all .and. target_image==this_image()) then
     if(.not.position_near_owner_boundary(la%o%pos,this_image())) cycle
   endif
-  co_owned_count=co_owned_count+1
-  slot=co_owned_count
-  co_uid(slot) = la%o%uid
-  co_new_owner(slot) = new_owner
-  co_pos(:,slot) = la%o%pos(:)
-  co_old_cg(:,slot) = la%o%old_cg(:)
-  co_vel(:,slot) = la%o%vel(:)
-  co_element(slot) = la%o%z
-  co_skip(slot) = la%o%skip
+  packed_count=packed_count+1
+  record=packed_count
+  packed_uid(record) = la%o%uid
+  packed_target_image(record) = target_image
+  packed_pos(:,record) = la%o%pos(:)
+  packed_rollback_pos(:,record) = la%o%old_cg(:)
+  packed_vel(:,record) = la%o%vel(:)
+  packed_element(record) = la%o%z
+  packed_skip(record) = la%o%skip
 enddo
 
 sync all
 
-do owner=1,num_images()
-  nrecv=co_owned_count[owner]
-  if(nrecv==0) cycle
-  recv_uid(:nrecv)=co_uid(:nrecv)[owner]
-  recv_owner(:nrecv)=co_new_owner(:nrecv)[owner]
+do source_image=1,num_images()
+  record_count=packed_count[source_image]
+  if(record_count==0) cycle
+  fetched_uid(:record_count)=packed_uid(:record_count)[source_image]
+  fetched_target_image(:record_count)=packed_target_image(:record_count)[source_image]
   ! Full synchronization keeps the replicated physical state coherent for
   ! GCMC. During overlap closure, only neighboring domains need the heavy
   ! atom state; every image still receives ownership metadata.
-  receive_state=gather_all .or. .not.fast_mode .or. adjacent_domains(this_image(),owner)
-  if(receive_state) then
-    recv_pos(:,:nrecv)=co_pos(:,:nrecv)[owner]
-    recv_old_cg(:,:nrecv)=co_old_cg(:,:nrecv)[owner]
-    recv_vel(:,:nrecv)=co_vel(:,:nrecv)[owner]
-    recv_element(:nrecv)=co_element(:nrecv)[owner]
-    recv_skip(:nrecv)=co_skip(:nrecv)[owner]
+  fetch_payload=gather_all .or. .not.fast_mode .or. adjacent_domains(this_image(),source_image)
+  if(fetch_payload) then
+    fetched_pos(:,:record_count)=packed_pos(:,:record_count)[source_image]
+    fetched_rollback_pos(:,:record_count)=packed_rollback_pos(:,:record_count)[source_image]
+    fetched_vel(:,:record_count)=packed_vel(:,:record_count)[source_image]
+    fetched_element(:record_count)=packed_element(:record_count)[source_image]
+    fetched_skip(:record_count)=packed_skip(:record_count)[source_image]
   endif
 
-  do slot=1,nrecv
-    call werr('Invalid atom UID in coarray snapshot',recv_uid(slot)<1 .or. &
-      recv_uid(slot)>size(uid_to_sys))
-    i=uid_to_sys(recv_uid(slot))
+  do record=1,record_count
+    call werr('Invalid atom UID in coarray snapshot',fetched_uid(record)<1 .or. &
+      fetched_uid(record)>size(uid_to_sys))
+    i=uid_to_sys(fetched_uid(record))
     call werr('Unknown atom UID in coarray snapshot',i<1)
-    received_atom=>sys%a(i)%o
-    if(atom_owner(i)/=owner) then
+    local_atom=>sys%a(i)%o
+    if(atom_owner(i)/=source_image) then
       call wstd(); write(logunit,'("GCMC/domain ownership mismatch: image=",i0," uid=",i0, &
         & " sender=",i0," local_owner=",i0," sys_gid=",i0)') &
-        this_image(),recv_uid(slot),owner,atom_owner(i),i
+        this_image(),fetched_uid(record),source_image,atom_owner(i),i
       call werr('Coarray atom ownership mismatch',.true.)
     endif
-    atom_owner(i)=recv_owner(slot)
-    if(.not.receive_state) cycle
-    if(received_atom%z/=recv_element(slot)) call received_atom%setz(recv_element(slot))
-    received_atom%pos(:)=recv_pos(:,slot)
-    received_atom%old_cg(:)=recv_old_cg(:,slot)
-    received_atom%vel(:)=recv_vel(:,slot)
-    received_atom%skip=recv_skip(slot)
-    if(recv_owner(slot)==this_image() .or. candidate_atom(received_atom)) atom_visible(i)=.true.
-    if(fast_mode) call refresh_one_domain_role(received_atom,i,.true.,membership_changed)
+    atom_owner(i)=fetched_target_image(record)
+    if(.not.fetch_payload) cycle
+    if(local_atom%z/=fetched_element(record)) call local_atom%setz(fetched_element(record))
+    local_atom%pos(:)=fetched_pos(:,record)
+    local_atom%old_cg(:)=fetched_rollback_pos(:,record)
+    local_atom%vel(:)=fetched_vel(:,record)
+    local_atom%skip=fetched_skip(record)
+    if(fetched_target_image(record)==this_image() .or. candidate_atom(local_atom)) atom_visible(i)=.true.
+    if(fast_mode) call refresh_one_domain_role(local_atom,i,.true.,membership_changed)
   enddo
 enddo
 
@@ -1128,11 +1128,11 @@ do img=1,hs_focus%nat
   displacement=distance(focus_atom%o%pos,focus_atom%o%old_cg,focus_atom%o%pbc)
   local_disp2=max(local_disp2,dot_product(displacement,displacement))
 enddo
-overlap_step_displacement=local_disp2
+overlap_max_displacement2=local_disp2
 sync all
 global_disp2=0._dp
 do img=1,num_images()
-  global_disp2=max(global_disp2,overlap_step_displacement[img])
+  global_disp2=max(global_disp2,overlap_max_displacement2[img])
 enddo
 reuse_neighbor_list=2._dp*sqrt(global_disp2)<=nb_dcut
 
@@ -1149,15 +1149,15 @@ do round=1,max(1,sys%nat)
   enddo
   call werr('Local overlap closure did not converge',local_actions>0)
 
-  overlap_round_actions=phase_actions
-  overlap_round_unresolved=local_unresolved
+  round_action_count=phase_actions
+  round_unresolved_count=local_unresolved
   sync all
 
   total_actions=0
   total_unresolved=0
   do img=1,num_images()
-    total_actions=total_actions+overlap_round_actions[img]
-    total_unresolved=total_unresolved+overlap_round_unresolved[img]
+    total_actions=total_actions+round_action_count[img]
+    total_unresolved=total_unresolved+round_unresolved_count[img]
   enddo
 
   if(total_actions==0) exit
@@ -1398,11 +1398,11 @@ type(atom_dclist), pointer :: la
 integer, allocatable       :: old_owner(:)
 integer                    :: i, nold
 
-if(allocated(atom_owner) .and. allocated(co_uid) .and. allocated(co_element) .and. &
-  allocated(atom_visible) .and. allocated(co_skip) .and. allocated(co_pos) .and. &
-  allocated(co_old_cg) .and. allocated(co_vel)) then
+if(allocated(atom_owner) .and. allocated(packed_uid) .and. allocated(packed_element) .and. &
+  allocated(atom_visible) .and. allocated(packed_skip) .and. allocated(packed_pos) .and. &
+  allocated(packed_rollback_pos) .and. allocated(packed_vel)) then
   if(size(atom_owner) >= sys%amax .and. size(atom_visible) >= sys%amax .and. &
-    size(co_pos,2) == sys%nat) return
+    size(packed_pos,2) == sys%nat) return
 endif
 
 focus_dirty = .true.
@@ -1417,39 +1417,39 @@ endif
 if(allocated(atom_visible)) deallocate(atom_visible)
 
 sync all
-if(allocated(co_element)) deallocate(co_element)
-if(allocated(co_uid)) deallocate(co_uid)
-if(allocated(co_new_owner)) deallocate(co_new_owner)
-if(allocated(co_skip)) deallocate(co_skip)
-if(allocated(co_pos)) deallocate(co_pos)
-if(allocated(co_old_cg)) deallocate(co_old_cg)
-if(allocated(co_vel)) deallocate(co_vel)
-if(allocated(recv_pos)) deallocate(recv_pos)
-if(allocated(recv_old_cg)) deallocate(recv_old_cg)
-if(allocated(recv_vel)) deallocate(recv_vel)
-if(allocated(recv_element)) deallocate(recv_element)
-if(allocated(recv_uid)) deallocate(recv_uid)
-if(allocated(recv_owner)) deallocate(recv_owner)
+if(allocated(packed_element)) deallocate(packed_element)
+if(allocated(packed_uid)) deallocate(packed_uid)
+if(allocated(packed_target_image)) deallocate(packed_target_image)
+if(allocated(packed_skip)) deallocate(packed_skip)
+if(allocated(packed_pos)) deallocate(packed_pos)
+if(allocated(packed_rollback_pos)) deallocate(packed_rollback_pos)
+if(allocated(packed_vel)) deallocate(packed_vel)
+if(allocated(fetched_pos)) deallocate(fetched_pos)
+if(allocated(fetched_rollback_pos)) deallocate(fetched_rollback_pos)
+if(allocated(fetched_vel)) deallocate(fetched_vel)
+if(allocated(fetched_element)) deallocate(fetched_element)
+if(allocated(fetched_uid)) deallocate(fetched_uid)
+if(allocated(fetched_target_image)) deallocate(fetched_target_image)
 if(allocated(uid_to_sys)) deallocate(uid_to_sys)
-if(allocated(recv_skip)) deallocate(recv_skip)
+if(allocated(fetched_skip)) deallocate(fetched_skip)
 
 allocate(atom_owner(size(sys%a)))
-allocate(co_element(sys%nat)[*])
-allocate(co_uid(sys%nat)[*])
-allocate(co_new_owner(sys%nat)[*])
+allocate(packed_element(sys%nat)[*])
+allocate(packed_uid(sys%nat)[*])
+allocate(packed_target_image(sys%nat)[*])
 allocate(atom_visible(size(sys%a)))
-allocate(co_skip(sys%nat)[*])
-allocate(co_pos(3,sys%nat)[*])
-allocate(co_old_cg(3,sys%nat)[*],co_vel(3,sys%nat)[*])
-allocate(recv_pos(3,sys%nat),recv_old_cg(3,sys%nat),recv_vel(3,sys%nat))
-allocate(recv_uid(sys%nat),recv_element(sys%nat),recv_owner(sys%nat),recv_skip(sys%nat))
-co_pos(:,:) = 0._dp
-co_old_cg(:,:) = 0._dp
-co_vel(:,:) = 0._dp
-co_element(:) = 119
-co_uid(:) = 0
-co_new_owner(:) = 1
-co_skip(:) = .false.
+allocate(packed_skip(sys%nat)[*])
+allocate(packed_pos(3,sys%nat)[*])
+allocate(packed_rollback_pos(3,sys%nat)[*],packed_vel(3,sys%nat)[*])
+allocate(fetched_pos(3,sys%nat),fetched_rollback_pos(3,sys%nat),fetched_vel(3,sys%nat))
+allocate(fetched_uid(sys%nat),fetched_element(sys%nat),fetched_target_image(sys%nat),fetched_skip(sys%nat))
+packed_pos(:,:) = 0._dp
+packed_rollback_pos(:,:) = 0._dp
+packed_vel(:,:) = 0._dp
+packed_element(:) = 119
+packed_uid(:) = 0
+packed_target_image(:) = 1
+packed_skip(:) = .false.
 atom_visible(:) = .false.
 
 atom_owner(:) = 1
@@ -1507,12 +1507,12 @@ enddo
 
 call gcmc_accessible_bounds(active_lo,active_hi,gcmc_patch_volume,active_volume)
 gcmc_accessible_volume=active_volume
-co_gcmc_active_volume=active_volume
+gcmc_image_active_volume=active_volume
 sync all
 
 total_active_volume=0._dp
 do owner=1,num_images()
-  total_active_volume=total_active_volume+co_gcmc_active_volume[owner]
+  total_active_volume=total_active_volume+gcmc_image_active_volume[owner]
 enddo
 call werr('GCMC safety margins leave no accessible reservoir volume',total_active_volume<=0._dp)
 
@@ -1522,7 +1522,7 @@ raw_attempts=real(nadj,dp)*active_volume/total_active_volume
 base_attempts=floor(raw_attempts)
 total_base=0
 do owner=1,num_images()
-  total_base=total_base+floor(real(nadj,dp)*co_gcmc_active_volume[owner]/total_active_volume)
+  total_base=total_base+floor(real(nadj,dp)*gcmc_image_active_volume[owner]/total_active_volume)
 enddo
 remaining=nadj-total_base
 my_fraction=raw_attempts-real(base_attempts,dp)
@@ -1530,7 +1530,7 @@ fraction_rank=1
 eps_fraction=32._dp*epsilon(1._dp)
 do owner=1,num_images()
   if(owner==this_image()) cycle
-  other_raw=real(nadj,dp)*co_gcmc_active_volume[owner]/total_active_volume
+  other_raw=real(nadj,dp)*gcmc_image_active_volume[owner]/total_active_volume
   other_fraction=other_raw-real(floor(other_raw),dp)
   if(other_fraction>my_fraction+eps_fraction .or. &
     (abs(other_fraction-my_fraction)<=eps_fraction .and. owner<this_image())) fraction_rank=fraction_rank+1
@@ -1538,11 +1538,11 @@ enddo
 gcmc_local_attempts=base_attempts
 if(fraction_rank<=remaining) gcmc_local_attempts=gcmc_local_attempts+1
 
-co_gcmc_count=0
-co_gcmc_creations=0
-co_gcmc_kind(:)=0
-co_gcmc_uid(:)=0
-co_gcmc_pos(:,:)=0._dp
+gcmc_op_count=0
+gcmc_creation_count=0
+gcmc_op_kind(:)=0
+gcmc_op_uid(:)=0
+gcmc_op_pos(:,:)=0._dp
 
 max_eligible=max(1,g%nat+gcmc_local_attempts)
 allocate(eligible_uid(max_eligible),eligible_pos(3,max_eligible))
@@ -1583,7 +1583,7 @@ adj: do i=1,gcmc_local_attempts
     do j=1,g%nat
       la=>la%next
       o => la%o
-      if(gcmc_uid_deleted(o%uid,co_gcmc_count)) cycle
+      if(gcmc_uid_deleted(o%uid,gcmc_op_count)) cycle
       vd(:) = distance(o%pos,r,o%pbc)
       dr = dot_product(vd,vd)
       if(dr<rc*rc) then
@@ -1604,13 +1604,13 @@ adj: do i=1,gcmc_local_attempts
     enddo
     if(overlaps) cycle
 
-    co_gcmc_count=co_gcmc_count+1
-    co_gcmc_creations=co_gcmc_creations+1
-    co_gcmc_kind(co_gcmc_count)=1
-    co_gcmc_uid(co_gcmc_count)=-co_gcmc_creations
-    co_gcmc_pos(:,co_gcmc_count)=r(:)
+    gcmc_op_count=gcmc_op_count+1
+    gcmc_creation_count=gcmc_creation_count+1
+    gcmc_op_kind(gcmc_op_count)=1
+    gcmc_op_uid(gcmc_op_count)=-gcmc_creation_count
+    gcmc_op_pos(:,gcmc_op_count)=r(:)
     n=n+1
-    eligible_uid(n)=-co_gcmc_creations
+    eligible_uid(n)=-gcmc_creation_count
     eligible_pos(:,n)=r(:)
          
   ! Destruction attempt
@@ -1624,10 +1624,10 @@ adj: do i=1,gcmc_local_attempts
     if(m>n) m=n
     call werr('Chosen particle does not exist',m<1 .or. m>n)
 
-    co_gcmc_count=co_gcmc_count+1
-    co_gcmc_kind(co_gcmc_count)=-1
-    co_gcmc_uid(co_gcmc_count)=eligible_uid(m)
-    co_gcmc_pos(:,co_gcmc_count)=eligible_pos(:,m)
+    gcmc_op_count=gcmc_op_count+1
+    gcmc_op_kind(gcmc_op_count)=-1
+    gcmc_op_uid(gcmc_op_count)=eligible_uid(m)
+    gcmc_op_pos(:,gcmc_op_count)=eligible_pos(:,m)
     n=n-1
     if(m<=n) then
       eligible_uid(m:n)=eligible_uid(m+1:n+1)
@@ -1644,23 +1644,23 @@ sync all
 uid_base=next_atom_uid
 uid_prefix=0
 do owner=1,this_image()-1
-  uid_prefix=uid_prefix+co_gcmc_creations[owner]
+  uid_prefix=uid_prefix+gcmc_creation_count[owner]
 enddo
 total_creations=uid_prefix
 do owner=this_image(),num_images()
-  total_creations=total_creations+co_gcmc_creations[owner]
+  total_creations=total_creations+gcmc_creation_count[owner]
 enddo
-do i=1,co_gcmc_count
-  if(co_gcmc_uid(i)<0) co_gcmc_uid(i)=uid_base+uid_prefix-co_gcmc_uid(i)
+do i=1,gcmc_op_count
+  if(gcmc_op_uid(i)<0) gcmc_op_uid(i)=uid_base+uid_prefix-gcmc_op_uid(i)
 enddo
 next_atom_uid=uid_base+total_creations
 sync all
 
 do owner=1,num_images()
-  do i=1,co_gcmc_count[owner]
-    kind=co_gcmc_kind(i)[owner]
-    uid=co_gcmc_uid(i)[owner]
-    r(:)=co_gcmc_pos(:,i)[owner]
+  do i=1,gcmc_op_count[owner]
+    kind=gcmc_op_kind(i)[owner]
+    uid=gcmc_op_uid(i)[owner]
+    r(:)=gcmc_op_pos(:,i)[owner]
     call werr('Invalid GCMC operation kind',kind/=-1 .and. kind/=1)
     if(kind==1) then
       call gcmc_apply_creation(g,uid,r)
@@ -1731,7 +1731,7 @@ integer            :: op
 
 deleted=.false.
 do op=1,nops
-  if(co_gcmc_kind(op)==-1 .and. co_gcmc_uid(op)==uid) then
+  if(gcmc_op_kind(op)==-1 .and. gcmc_op_uid(op)==uid) then
     deleted=.true.
     return
   endif
@@ -1942,15 +1942,15 @@ integer  :: j, image, total_try, total_depo
 type(atom_dclist), pointer :: la 
 
 call sync_owned_positions(.true.)
-output_try=try
-output_depo=depo
+image_try_count=try
+image_deposition_count=depo
 sync all
 
 total_try=0
 total_depo=0
 do image=1,num_images()
-  total_try=total_try+output_try[image]
-  total_depo=total_depo+output_depo[image]
+  total_try=total_try+image_try_count[image]
+  total_depo=total_depo+image_deposition_count[image]
 enddo
 try=0
 depo=0
