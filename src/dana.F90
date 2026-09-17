@@ -67,6 +67,7 @@ program dana
   integer             :: co_owned_count[*]=0
   integer             :: co_gcmc_count[*]=0, co_gcmc_creations[*]=0
   real(dp)            :: co_gcmc_active_volume[*]=0._dp
+  real(dp)            :: overlap_step_displacement[*]=0._dp
   real(dp)            :: gcmc_patch_volume=0._dp, gcmc_accessible_volume=0._dp
   integer             :: gcmc_local_attempts=0
   integer             :: overlap_round_actions[*]=0, overlap_round_unresolved[*]=0
@@ -200,7 +201,6 @@ program dana
     enddo
     
     call gcmc_run(gcmc)
-    call sync_owned_positions()
 
     ! Output 
     if (mod(i,nwr)==0) then
@@ -732,37 +732,49 @@ end select
 end function global_domain_length
 
 
-subroutine sync_owned_positions(global_snapshot)
+subroutine sync_owned_positions(global_snapshot,incremental)
 ! Pack each owner's records contiguously so remote state arrives in a few array
 ! transfers instead of many scalar coindexed reads.
 use gems_errors, only: werr
 logical,intent(in),optional :: global_snapshot
+logical,intent(in),optional :: incremental
 type(atom_dclist), pointer :: la
 type(atom), pointer        :: received_atom
-integer                   :: i, gid, owner, nrecv, slot, new_owner
-logical                   :: gather_all
+integer                   :: i, gid, item, owner, nrecv, slot, new_owner, pack_count
+logical                   :: gather_all,fast_mode,membership_changed,receive_state
 
 call prof_start(prof_sync_pos_tick)
 call ensure_sync_storage()
-call rebuild_uid_index()
 gather_all=.false.
 if(present(global_snapshot)) gather_all=global_snapshot
+fast_mode=.false.
+if(present(incremental)) fast_mode=incremental
+membership_changed=.false.
+if(.not.fast_mode) call rebuild_uid_index()
 if(num_images()==1) then
   call refresh_domain_ownership()
   call prof_stop(prof_sync_pos_tick,prof_sync_pos,prof_n_sync_pos)
   return
 endif
 
-atom_visible(:)=.false.
-la=>sys%alist
-do i=1,sys%nat
-  la=>la%next
-  gid=la%o%gid(sys)
-  atom_visible(gid)=atom_owner(gid)==this_image()
-enddo
+if(.not.fast_mode) then
+  atom_visible(:)=.false.
+  la=>sys%alist
+  do i=1,sys%nat
+    la=>la%next
+    gid=la%o%gid(sys)
+    atom_visible(gid)=atom_owner(gid)==this_image()
+  enddo
+endif
 co_owned_count=0
-la => sys%alist
-do i=1,sys%nat
+if(fast_mode) then
+  la=>hs_focus%alist
+  pack_count=hs_focus%nat
+else
+  la=>sys%alist
+  pack_count=sys%nat
+endif
+do item=1,pack_count
   la => la%next
   gid=la%o%gid(sys)
   if(atom_owner(gid) /= this_image()) cycle
@@ -788,11 +800,17 @@ do owner=1,num_images()
   if(nrecv==0) cycle
   recv_uid(:nrecv)=co_uid(:nrecv)[owner]
   recv_owner(:nrecv)=co_new_owner(:nrecv)[owner]
-  recv_pos(:,:nrecv)=co_pos(:,:nrecv)[owner]
-  recv_old_cg(:,:nrecv)=co_old_cg(:,:nrecv)[owner]
-  recv_vel(:,:nrecv)=co_vel(:,:nrecv)[owner]
-  recv_element(:nrecv)=co_element(:nrecv)[owner]
-  recv_skip(:nrecv)=co_skip(:nrecv)[owner]
+  ! Full synchronization keeps the replicated physical state coherent for
+  ! GCMC. During overlap closure, only neighboring domains need the heavy
+  ! atom state; every image still receives ownership metadata.
+  receive_state=gather_all .or. .not.fast_mode .or. adjacent_domains(this_image(),owner)
+  if(receive_state) then
+    recv_pos(:,:nrecv)=co_pos(:,:nrecv)[owner]
+    recv_old_cg(:,:nrecv)=co_old_cg(:,:nrecv)[owner]
+    recv_vel(:,:nrecv)=co_vel(:,:nrecv)[owner]
+    recv_element(:nrecv)=co_element(:nrecv)[owner]
+    recv_skip(:nrecv)=co_skip(:nrecv)[owner]
+  endif
 
   do slot=1,nrecv
     call werr('Invalid atom UID in coarray snapshot',recv_uid(slot)<1 .or. &
@@ -806,22 +824,102 @@ do owner=1,num_images()
         this_image(),recv_uid(slot),owner,atom_owner(i),i
       call werr('Coarray atom ownership mismatch',.true.)
     endif
+    atom_owner(i)=recv_owner(slot)
+    if(.not.receive_state) cycle
     if(received_atom%z/=recv_element(slot)) call received_atom%setz(recv_element(slot))
     received_atom%pos(:)=recv_pos(:,slot)
     received_atom%old_cg(:)=recv_old_cg(:,slot)
     received_atom%vel(:)=recv_vel(:,slot)
     received_atom%skip=recv_skip(slot)
-    atom_owner(i)=recv_owner(slot)
     if(recv_owner(slot)==this_image() .or. candidate_atom(received_atom)) atom_visible(i)=.true.
+    if(fast_mode) call refresh_one_domain_role(received_atom,i,.true.,membership_changed)
   enddo
 enddo
 
 sync all
 
-call refresh_domain_ownership()
+if(fast_mode) then
+  if(membership_changed) hs%listed=.false.
+  focus_dirty=.false.
+else
+  call refresh_domain_ownership()
+endif
 call prof_stop(prof_sync_pos_tick, prof_sync_pos, prof_n_sync_pos)
 
 end subroutine sync_owned_positions
+
+
+logical function adjacent_domains(first,second) result(adjacent)
+integer,intent(in) :: first,second
+integer            :: axis,delta,first_coord(3),second_coord(3)
+
+call image_coordinates(first,first_coord)
+call image_coordinates(second,second_coord)
+adjacent=.true.
+do axis=1,3
+  delta=abs(first_coord(axis)-second_coord(axis))
+  if(domain_periodic(axis)) delta=min(delta,domain_dims(axis)-delta)
+  if(delta>1) then
+    adjacent=.false.
+    return
+  endif
+enddo
+
+end function adjacent_domains
+
+
+subroutine refresh_one_domain_role(a,gid,keep_stale_candidates,changed)
+class(atom),intent(inout) :: a
+integer,intent(in)        :: gid
+logical,intent(in)        :: keep_stale_candidates
+logical,intent(inout)     :: changed
+logical                   :: desired_candidate,desired_focus
+
+desired_candidate=atom_visible(gid) .and. candidate_atom(a)
+desired_focus=a%sym/='CG' .and. atom_owner(gid)==this_image()
+
+if(desired_candidate) then
+  if(a%gri(hs_candidate)<1) then
+    call hs_candidate%attach(a)
+    changed=.true.
+  endif
+  if(a%gri(hs%candidate)<1) then
+    call hs%candidate%attach(a)
+    changed=.true.
+  endif
+elseif(.not.keep_stale_candidates) then
+  hs%candidate%tessellated=.false.
+  if(a%gri(hs%candidate)>0) then
+    call hs%candidate%detach(a)
+    changed=.true.
+  endif
+  if(a%gri(hs_candidate)>0) then
+    call hs_candidate%detach(a)
+    changed=.true.
+  endif
+endif
+
+if(desired_focus) then
+  if(a%gri(hs_focus)<1) then
+    call hs_focus%attach(a)
+    changed=.true.
+  endif
+  if(a%gri(hs%focus)<1) then
+    call hs%focus%attach(a)
+    changed=.true.
+  endif
+else
+  if(a%gri(hs%focus)>0) then
+    call hs%focus%detach(a)
+    changed=.true.
+  endif
+  if(a%gri(hs_focus)>0) then
+    call hs_focus%detach(a)
+    changed=.true.
+  endif
+endif
+
+end subroutine refresh_one_domain_role
 
 
 logical function position_near_owner_boundary(r,owner) result(near_boundary)
@@ -879,7 +977,7 @@ subroutine refresh_domain_ownership()
 type(atom_dclist), pointer :: la
 integer                   :: i, gid
 integer                   :: new_owner
-logical                   :: rebuild_focus, desired_candidate, desired_focus
+logical                   :: rebuild_focus, desired_candidate, desired_focus, membership_changed
 
 if(.not.allocated(atom_owner)) return
 
@@ -903,6 +1001,7 @@ endif
 ! Positions may have changed since the previous cell sort. Invalidate the cell
 ! chains before removing the comparatively few atoms whose role changed.
 hs%candidate%tessellated=.false.
+membership_changed=.false.
 
 if(num_images()==1 .and. allocated(atom_visible)) atom_visible(:) = .true.
 la => sys%alist
@@ -913,23 +1012,47 @@ do i=1,sys%nat
   desired_focus=la%o%sym /= 'CG' .and. atom_owner(gid) == this_image()
 
   if(desired_candidate) then
-    if(la%o%gri(hs_candidate)<1) call hs_candidate%attach(la%o)
-    if(la%o%gri(hs%candidate)<1) call hs%candidate%attach(la%o)
+    if(la%o%gri(hs_candidate)<1) then
+      call hs_candidate%attach(la%o)
+      membership_changed=.true.
+    endif
+    if(la%o%gri(hs%candidate)<1) then
+      call hs%candidate%attach(la%o)
+      membership_changed=.true.
+    endif
   else
-    if(la%o%gri(hs%candidate)>0) call hs%candidate%detach(la%o)
-    if(la%o%gri(hs_candidate)>0) call hs_candidate%detach(la%o)
+    if(la%o%gri(hs%candidate)>0) then
+      call hs%candidate%detach(la%o)
+      membership_changed=.true.
+    endif
+    if(la%o%gri(hs_candidate)>0) then
+      call hs_candidate%detach(la%o)
+      membership_changed=.true.
+    endif
   endif
 
   if(desired_focus) then
-    if(la%o%gri(hs_focus)<1) call hs_focus%attach(la%o)
-    if(la%o%gri(hs%focus)<1) call hs%focus%attach(la%o)
+    if(la%o%gri(hs_focus)<1) then
+      call hs_focus%attach(la%o)
+      membership_changed=.true.
+    endif
+    if(la%o%gri(hs%focus)<1) then
+      call hs%focus%attach(la%o)
+      membership_changed=.true.
+    endif
   else
-    if(la%o%gri(hs%focus)>0) call hs%focus%detach(la%o)
-    if(la%o%gri(hs_focus)>0) call hs_focus%detach(la%o)
+    if(la%o%gri(hs%focus)>0) then
+      call hs%focus%detach(la%o)
+      membership_changed=.true.
+    endif
+    if(la%o%gri(hs_focus)>0) then
+      call hs_focus%detach(la%o)
+      membership_changed=.true.
+    endif
   endif
 enddo
 
-hs%listed = .false.
+if(membership_changed) hs%listed = .false.
 focus_dirty = .false.
 
 sync all
@@ -984,21 +1107,49 @@ end subroutine attach_all_focus_atoms
 
 subroutine solve_overlaps_parallel(g)
 use gems_errors, only: werr
+use gems_program_types, only: distance
 class(ngroup),intent(inout) :: g
 logical,allocatable         :: rollback(:), deposition_contact(:)
 integer                     :: round, img, local_actions, total_actions
+integer                     :: local_round, phase_actions
 integer                     :: local_unresolved, total_unresolved
+real(dp)                    :: local_disp2,global_disp2,displacement(3)
+type(atom_dclist),pointer   :: focus_atom
+logical                     :: reuse_neighbor_list
 
-allocate(rollback(sys%nat),deposition_contact(sys%nat))
+allocate(rollback(size(atom_owner)),deposition_contact(size(atom_owner)))
 total_actions=0
 total_unresolved=0
 
-do round=1,max(1,sys%nat)
-  call sync_execution_views()
-  call plan_overlap_round(g,rollback,deposition_contact,local_unresolved)
-  call apply_overlap_round(rollback,deposition_contact,local_actions)
+local_disp2=0._dp
+focus_atom=>hs_focus%alist
+do img=1,hs_focus%nat
+  focus_atom=>focus_atom%next
+  displacement=distance(focus_atom%o%pos,focus_atom%o%old_cg,focus_atom%o%pbc)
+  local_disp2=max(local_disp2,dot_product(displacement,displacement))
+enddo
+overlap_step_displacement=local_disp2
+sync all
+global_disp2=0._dp
+do img=1,num_images()
+  global_disp2=max(global_disp2,overlap_step_displacement[img])
+enddo
+reuse_neighbor_list=2._dp*sqrt(global_disp2)<=nb_dcut
 
-  overlap_round_actions=local_actions
+do round=1,max(1,sys%nat)
+  phase_actions=0
+  do local_round=1,max(1,sys%nat)
+    if((round==1 .and. local_round==1) .or. .not.reuse_neighbor_list .or. .not.g%listed) &
+      call sync_execution_views()
+    call plan_overlap_round(g,rollback,deposition_contact,local_unresolved)
+    call apply_overlap_round(rollback,deposition_contact,local_actions)
+    phase_actions=phase_actions+local_actions
+    overlap_parallel_rounds=overlap_parallel_rounds+1
+    if(local_actions==0) exit
+  enddo
+  call werr('Local overlap closure did not converge',local_actions>0)
+
+  overlap_round_actions=phase_actions
   overlap_round_unresolved=local_unresolved
   sync all
 
@@ -1009,9 +1160,8 @@ do round=1,max(1,sys%nat)
     total_unresolved=total_unresolved+overlap_round_unresolved[img]
   enddo
 
-  overlap_parallel_rounds=overlap_parallel_rounds+1
   if(total_actions==0) exit
-  call sync_owned_positions()
+  call sync_owned_positions(incremental=.true.)
 enddo
 
 call werr('Bounded parallel overlap solver did not converge',total_actions>0)
@@ -1029,23 +1179,13 @@ logical,intent(out)       :: rollback(:), deposition_contact(:)
 integer,intent(out)       :: unresolved
 type(atom_dclist),pointer :: la
 type(atom),pointer        :: o1, o2, o2_image
-integer,allocatable       :: row_gid(:)
-integer                   :: i, ii, j, jj, k, gid1, gid2, real_row, target_gid
+integer                   :: i, ii, j, jj, gid1, gid2, target_gid
 real(dp)                  :: vd(3), dr, moved1, moved2, scale
 logical                   :: movable1, movable2
 
 rollback(:)=.false.
 deposition_contact(:)=.false.
 unresolved=0
-allocate(row_gid(size(g%real_id)))
-row_gid(:)=0
-
-la=>sys%alist
-do k=1,sys%nat
-  la=>la%next
-  i=la%o%gid(g)
-  if(i>0) row_gid(i)=k
-enddo
 
 la=>g%focus%alist
 do ii=1,g%focus%nat
@@ -1053,9 +1193,7 @@ do ii=1,g%focus%nat
   o1=>la%o
   i=o1%gid(g)
   if(i<1) cycle
-  real_row=g%real_id(i)
-  if(real_row<1 .or. real_row>size(row_gid)) cycle
-  gid1=row_gid(real_row)
+  gid1=o1%gid(sys)
   if(gid1<1) cycle
 
   do jj=1,g%nn(i)
@@ -1068,15 +1206,13 @@ do ii=1,g%focus%nat
     dr=dot_product(vd,vd)
     if(dr>g%rcut2) cycle
 
-    real_row=g%real_id(j)
-    if(real_row<1 .or. real_row>size(row_gid)) cycle
-    gid2=row_gid(real_row)
-    if(gid2<1 .or. gid1==gid2) cycle
     if(associated(o2_image%prime)) then
       o2=>o2_image%prime
     else
       o2=>o2_image
     endif
+    gid2=o2%gid(sys)
+    if(gid2<1 .or. gid1==gid2) cycle
 
     if(o2%z==2) then
       if(o1%z==1) deposition_contact(gid1)=.true.
@@ -1112,8 +1248,6 @@ do ii=1,g%focus%nat
   enddo
 enddo
 
-deallocate(row_gid)
-
 end subroutine plan_overlap_round
 
 
@@ -1122,15 +1256,15 @@ logical,intent(in)        :: rollback(:), deposition_contact(:)
 integer,intent(out)       :: actions
 type(atom_dclist),pointer :: la
 type(atom),pointer        :: a
-integer                   :: gid
+integer                   :: item,gid
 logical                   :: do_rollback
 
 actions=0
-la=>sys%alist
-do gid=1,sys%nat
+la=>hs_focus%alist
+do item=1,hs_focus%nat
   la=>la%next
-  if(atom_owner(gid)/=this_image()) cycle
   a=>la%o
+  gid=a%gid(sys)
   do_rollback=rollback(gid)
 
   if(deposition_contact(gid) .and. a%z==1) then
@@ -1186,7 +1320,7 @@ la => sys%alist
 do k=1,sys%nat
   la => la%next
   i=la%o%gid(g)
-  if(i>0) row_gid(i)=k
+  if(i>0) row_gid(i)=la%o%gid(sys)
 enddo
 
 la => g%focus%alist
@@ -1351,6 +1485,7 @@ real(dp),allocatable       :: eligible_pos(:,:)
 type(atom_dclist), pointer :: la
 type(atom),pointer         :: o, ref
 integer,allocatable        :: eligible_uid(:)
+integer,allocatable        :: owner_by_uid(:)
 integer                    :: i,j,n,m,owner,kind,uid
 integer                    :: base_attempts,total_base,remaining,fraction_rank
 integer                    :: uid_base,uid_prefix,total_creations
@@ -1358,6 +1493,17 @@ integer                    :: max_eligible
 logical                    :: overlaps
  
 rc=hs%rcut
+
+! GIDs can be compacted by deletions, whereas UIDs remain stable. Preserve
+! ownership by UID so replicas with intentionally stale non-halo positions do
+! not infer different owners after replaying the same GCMC operation stream.
+allocate(owner_by_uid(max(1,next_atom_uid)))
+owner_by_uid(:)=0
+la=>sys%alist
+do i=1,sys%nat
+  la=>la%next
+  owner_by_uid(la%o%uid)=atom_owner(la%o%gid(sys))
+enddo
 
 call gcmc_accessible_bounds(active_lo,active_hi,gcmc_patch_volume,active_volume)
 gcmc_accessible_volume=active_volume
@@ -1528,11 +1674,16 @@ call ensure_sync_storage()
 la=>sys%alist
 do i=1,sys%nat
   la=>la%next
-  atom_owner(la%o%gid(sys))=owner_image_for_position(la%o%pos)
+  uid=la%o%uid
+  if(uid<=size(owner_by_uid) .and. owner_by_uid(uid)>0) then
+    atom_owner(la%o%gid(sys))=owner_by_uid(uid)
+  else
+    atom_owner(la%o%gid(sys))=owner_image_for_position(la%o%pos)
+  endif
 enddo
 focus_dirty=.true.
 
-deallocate(eligible_uid,eligible_pos)
+deallocate(eligible_uid,eligible_pos,owner_by_uid)
 
 end subroutine gcmc_run
 
@@ -1596,8 +1747,6 @@ class(group)               :: g
 integer,intent(in)         :: uid
 real(dp),intent(in)        :: r(3)
 type(atom),pointer         :: created,ref
-class(group),pointer       :: gp
-integer                    :: membership
 
 ref=>g%alist%next%o
 call werr('No GCMC template particle',.not.associated(ref))
@@ -1606,10 +1755,11 @@ call created%init()
 created%uid=uid
 call atom_asign(created,ref)
 created%pos(:)=r(:)
-do membership=1,ref%ngr
-  gp=>ref%gro(membership)
-  call gp%attach(created)
-enddo
+call sys%attach(created)
+call g%attach(created)
+if(candidate_atom(created)) call hs_candidate%attach(created)
+if(created%sym/='CG' .and. owner_image_for_position(r)==this_image()) call hs_focus%attach(created)
+call hs%attach(created)
 created=>null()
 
 end subroutine gcmc_apply_creation
