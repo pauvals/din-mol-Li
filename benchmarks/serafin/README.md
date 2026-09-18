@@ -43,10 +43,12 @@ changes packages in it. Build DANA against that existing environment with:
 benchmarks/serafin/setup_open_coarrays.sh
 ```
 
-This loads OpenCoarrays from `v2`, builds DANA with `FC=caf`, and verifies that
-`src/dana` links to `libcaf_mpi`. The batch scripts only reload the same
-environment on compute nodes. `SPACK_ROOT` and `DANA_SPACK_ENV` are optional
-overrides; the Serafin paths above are their defaults.
+This loads OpenCoarrays from `v2`, builds DANA with `FC=caf`, and verifies the
+MPI coarray runtime. Spack may link `libcaf_mpi.a` statically, in which case it
+does not appear in `ldd`; the verifier combines `caf --show`, coarray symbols,
+and the resolved MPI library. The batch scripts only reload the same environment
+on compute nodes. `SPACK_ROOT` and `DANA_SPACK_ENV` are optional overrides; the
+Serafin paths above are their defaults.
 
 ## 3. Pilot jobs
 

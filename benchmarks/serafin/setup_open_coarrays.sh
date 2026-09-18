@@ -16,9 +16,6 @@ fi
 FC=caf ./configure --enable-coarray=compiler
 make -j "${DANA_BUILD_JOBS:-8}"
 
-if ! ldd src/dana | grep -q 'libcaf_mpi'; then
-  echo "The executable does not appear to be linked with libcaf_mpi" >&2
-  exit 1
-fi
+"$repo/benchmarks/serafin/check_mpi_caf.sh" src/dana
 
 echo "Built $repo/src/dana with OpenCoarrays/MPI from the existing Spack environment"

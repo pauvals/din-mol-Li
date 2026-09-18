@@ -22,9 +22,8 @@ if [[ ! -x $binary ]]; then
   echo "DANA executable not found: $binary" >&2
   exit 1
 fi
-if [[ ${DANA_SKIP_RUNTIME_CHECK:-0} != 1 ]] && ! ldd "$binary" | grep -q 'libcaf_mpi'; then
-  echo "DANA must be built with OpenCoarrays/libcaf_mpi for this launcher" >&2
-  exit 1
+if [[ ${DANA_SKIP_RUNTIME_CHECK:-0} != 1 ]]; then
+  "$repo/benchmarks/serafin/check_mpi_caf.sh" "$binary"
 fi
 for value in "$repeats" "$nodes" "$cores_per_node" "$tile_x" "$tile_y" "$steps" "$attempts"; do
   if [[ ! $value =~ ^[1-9][0-9]*$ ]]; then
