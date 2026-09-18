@@ -90,6 +90,11 @@ residual overlaps. A one-image run uses the final serial counter (`numero total
 de choques sin solucion`); multi-image runs use the global parallel counter
 (`residual observations`) produced by image 1.
 
+If DANA or `srun` exits unsuccessfully, the launcher records elapsed time and
+prints the final 80 lines of that configuration's raw log before propagating
+the exit status. The complete diagnostic remains in the corresponding
+`run-Nn-IxT-R.log` file under the results directory.
+
 The `1x1` baseline reserves an exclusive node but deliberately uses only one
 core. Consequently, `jobmetrics` reports very low whole-job CPU efficiency for
 a pilot containing only that configuration. This is expected and is not the

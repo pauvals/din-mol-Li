@@ -132,17 +132,26 @@ for config in $configs; do
     export DANA_DOMAIN_TOPOLOGY=xy
 
     start_ns=$(date +%s%N)
-    (
+    if (
       cd "$work"
       srun --mpi="$slurm_mpi" --nodes="$nodes" --ntasks="$images" \
         --ntasks-per-node="$tasks_per_node" --cpus-per-task="$threads" \
         --cpu-bind=cores --distribution=block:block --kill-on-bad-exit=1 \
         "$binary"
-    ) > "$log" 2>&1
+    ) > "$log" 2>&1; then
+      run_status=0
+    else
+      run_status=$?
+    fi
     end_ns=$(date +%s%N)
 
     launcher_wall=$(awk -v start="$start_ns" -v end="$end_ns" 'BEGIN {printf "%.6f", (end-start)/1.e9}')
     printf '%s\n' "$launcher_wall" > "$timing"
+    if (( run_status != 0 )); then
+      echo "Config $config repeat $repeat failed in srun with exit code $run_status after ${launcher_wall}s" >&2
+      tail -n 80 "$log" >&2
+      exit "$run_status"
+    fi
     dana_wall=$(awk '/wall time:/ {if ($(NF-1)>max) max=$(NF-1)} END {printf "%.6f", max}' "$log")
     residual=$(awk -v images="$images" '
       images == 1 && /numero total de choques sin solucion:/ {
