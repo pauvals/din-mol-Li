@@ -6,7 +6,15 @@ if [[ -z ${BASH_VERSION:-} ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
+case $- in
+  *u*) restore_nounset=1; set +u ;;
+  *) restore_nounset=0 ;;
+esac
 . /etc/profile
+if ((restore_nounset)); then
+  set -u
+fi
+unset restore_nounset
 module purge
 
 spack_root=${SPACK_ROOT:-/home/shared/gmm/spackrepo/spack-0.23/spack}
