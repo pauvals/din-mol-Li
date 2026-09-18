@@ -19,7 +19,7 @@ module purge
 
 spack_root=${SPACK_ROOT:-/home/shared/gmm/spackrepo/spack-0.23/spack}
 spack_env=${DANA_SPACK_ENV:-/home/shared/gmm/spackrepo/spack-0.23/serafin/v2}
-if [[ ! -f $spack_root/share/spack/setup-env.sh ]]; then
+if [[ ! -x $spack_root/bin/spack ]]; then
   echo "Spack was not found at $spack_root" >&2
   echo "See benchmarks/serafin/README.md for the one-time installation." >&2
   return 1 2>/dev/null || exit 1
@@ -29,9 +29,13 @@ if [[ ! -f $spack_env/spack.yaml ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
-. "$spack_root/share/spack/setup-env.sh"
 module load gcc spack-config
-spack -e "$spack_env" load opencoarrays
+if ! spack_load_commands=$("$spack_root/bin/spack" -e "$spack_env" load --sh opencoarrays); then
+  echo "Could not load OpenCoarrays from $spack_env" >&2
+  return 1 2>/dev/null || exit 1
+fi
+eval "$spack_load_commands"
+unset spack_load_commands
 
 if ! command -v caf >/dev/null 2>&1; then
   echo "OpenCoarrays compiler wrapper 'caf' is not available" >&2
