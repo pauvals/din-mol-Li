@@ -15,67 +15,37 @@ every image.
 From the local machine:
 
 ```sh
-scp dana-hpc-96a9ae0-serafin.tar.gz \
+scp dana-hpc-e133dc9-portable.tar.gz \
   "$USER@serafin.ccad.unc.edu.ar:~/"
 ```
 
 On Serafin:
 
 ```sh
-tar -xzf ~/dana-hpc-96a9ae0-serafin.tar.gz
-cd ~/dana-hpc-96a9ae0
+tar -xzf ~/dana-hpc-e133dc9-portable.tar.gz
+cd ~/dana-hpc-e133dc9
 ```
 
-## 2. Select the Spack installation and environment
+## 2. Install OpenCoarrays and build once
 
-The scripts accept an existing Spack installation and a dedicated environment.
-For the shared Serafin Spack 0.23 tree, start from its cluster configuration
-but keep DANA's roots and lock file under the user account:
-
-```sh
-export SPACK_ROOT=/home/shared/gmm/spackrepo/spack-0.23/spack
-export DANA_SPACK_ENV=$HOME/spack-envs/dana
-
-mkdir -p "$DANA_SPACK_ENV"
-cp /home/shared/gmm/spackrepo/spack-0.23/serafin/v2/spack.yaml \
-  "$DANA_SPACK_ENV/spack.yaml"
-sed -i 's/^  specs:$/  specs: []/' "$DANA_SPACK_ENV/spack.yaml"
-```
-
-The `sed` fixes the shared manifest's empty `specs:` value, which Spack 0.23
-rejects as `null`. If Spack is not installed elsewhere, the fallback remains:
+The UNC Spack guide uses `~/spack`, GCC, `spack-config`, and OpenMPI. If Spack
+is not installed yet:
 
 ```sh
 git clone --branch releases/v0.21 https://github.com/spack/spack.git ~/spack
 ```
 
-## 3. Build the source-only communication stack and DANA
-
-Run, preferably inside `tmux` or `screen`:
+Then run, preferably inside `tmux` or `screen`:
 
 ```sh
 benchmarks/serafin/setup_open_coarrays.sh
 ```
 
-This adds OpenCoarrays to the selected environment, reconcretizes without
-reusing installed dependencies, and builds UCX, OpenMPI, and OpenCoarrays with
-GCC 12.3. The repository scope in `spack-source-scope/packages.yaml` empties
-the external UCX/OpenMPI lists. It is applied by both setup and batch jobs.
+This installs `opencoarrays ^openmpi`, builds DANA with `FC=caf`, and verifies
+that `src/dana` links to `libcaf_mpi`. The batch scripts reload the same Spack
+environment on the compute nodes.
 
-This is required because Serafin's external HPC-X UCX advertises `-liberty`
-and build-host paths such as `/hpc/local/oss/binutils/2.37` in `ucx-ucs.pc`.
-Building OpenMPI against that metadata fails with `ld: cannot find -liberty`.
-The setup aborts if concretization still selects external UCX, if DANA does not
-link to `libcaf_mpi`, or if the resulting executable links under `/ccad/hpcx`.
-
-Keep these variables exported when submitting jobs:
-
-```sh
-export SPACK_ROOT=/home/shared/gmm/spackrepo/spack-0.23/spack
-export DANA_SPACK_ENV=$HOME/spack-envs/dana
-```
-
-## 4. Pilot jobs
+## 3. Pilot jobs
 
 First test one repeat, 50 steps, and a 16 x 16 system (152,576 particles):
 
@@ -90,7 +60,7 @@ sbatch --export=ALL,DANA_BENCH_REPEATS=1,DANA_BENCH_STEPS=50,DANA_BENCH_TILE_X=1
 Monitor with `squeue --me`; after a job starts, `jobmetrics JOBID` reports CPU
 and memory efficiency.
 
-## 5. Production benchmark
+## 4. Production benchmark
 
 Submit both jobs from the repository root so they use the same executable and
 input size:
