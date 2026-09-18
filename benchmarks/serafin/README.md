@@ -15,39 +15,38 @@ every image.
 From the local machine:
 
 ```sh
-scp dana-hpc-96a9ae0-serafin.tar.gz \
+scp dana-hpc-serafin.tar.gz \
   "$USER@serafin.ccad.unc.edu.ar:~/"
 ```
 
 On Serafin:
 
 ```sh
-tar -xzf ~/dana-hpc-96a9ae0-serafin.tar.gz
-cd ~/dana-hpc-96a9ae0
+tar -xzf ~/dana-hpc-serafin.tar.gz
+cd ~/dana-hpc-serafin
 ```
 
 ## 2. Select the Spack installation and environment
 
-The scripts accept an existing Spack installation and a dedicated environment.
-For the shared Serafin Spack 0.23 tree, start from its cluster configuration
-but keep DANA's roots and lock file under the user account:
+The scripts use Serafin's shared Spack installation and environment by default:
 
 ```sh
-export SPACK_ROOT=/home/shared/gmm/spackrepo/spack-0.23/spack
-export DANA_SPACK_ENV=$HOME/spack-envs/dana
-
-mkdir -p "$DANA_SPACK_ENV"
-cp /home/shared/gmm/spackrepo/spack-0.23/serafin/v2/spack.yaml \
-  "$DANA_SPACK_ENV/spack.yaml"
-sed -i 's/^  specs:$/  specs: []/' "$DANA_SPACK_ENV/spack.yaml"
+SPACK_ROOT=/home/shared/gmm/spackrepo/spack-0.23/spack
+SPACK_ENV=/home/shared/gmm/spackrepo/spack-0.23/serafin/v2
 ```
 
-The `sed` fixes the shared manifest's empty `specs:` value, which Spack 0.23
-rejects as `null`. If Spack is not installed elsewhere, the fallback remains:
+The environment belongs to the shared Spack tree; DANA neither copies it nor
+stores it in the source directory. Its manifest currently needs this one-time
+correction by a user with write permission because Spack 0.23 rejects an empty
+`specs:` value as `null`:
 
 ```sh
-git clone --branch releases/v0.21 https://github.com/spack/spack.git ~/spack
+sed -i 's/^  specs:$/  specs: []/' \
+  /home/shared/gmm/spackrepo/spack-0.23/serafin/v2/spack.yaml
 ```
+
+`SPACK_ROOT` and `DANA_SPACK_ENV` remain optional overrides for another Spack
+installation or environment; they are not required on Serafin.
 
 ## 3. Build the source-only communication stack and DANA
 
@@ -68,12 +67,7 @@ Building OpenMPI against that metadata fails with `ld: cannot find -liberty`.
 The setup aborts if concretization still selects external UCX, if DANA does not
 link to `libcaf_mpi`, or if the resulting executable links under `/ccad/hpcx`.
 
-Keep these variables exported when submitting jobs:
-
-```sh
-export SPACK_ROOT=/home/shared/gmm/spackrepo/spack-0.23/spack
-export DANA_SPACK_ENV=$HOME/spack-envs/dana
-```
+The batch jobs resolve the same shared environment automatically on every node.
 
 ## 4. Pilot jobs
 

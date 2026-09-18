@@ -7,7 +7,9 @@ spack_scope=$repo/benchmarks/serafin/spack-source-scope
 . /etc/profile
 module purge
 
-spack_root=${SPACK_ROOT:-$HOME/spack}
+default_spack_root=/home/shared/gmm/spackrepo/spack-0.23/spack
+default_spack_env=/home/shared/gmm/spackrepo/spack-0.23/serafin/v2
+spack_root=${SPACK_ROOT:-$default_spack_root}
 if [[ ! -f $spack_root/share/spack/setup-env.sh ]]; then
   cat >&2 <<EOF
 Spack was not found at $spack_root.
@@ -20,11 +22,20 @@ fi
 . "$spack_root/share/spack/setup-env.sh"
 module load gcc spack-config
 
-spack_env=${DANA_SPACK_ENV:-${SPACK_ENV:-}}
-if [[ -z $spack_env || ! -f $spack_env/spack.yaml ]]; then
+spack_env=${DANA_SPACK_ENV:-${SPACK_ENV:-$default_spack_env}}
+if [[ ! -f $spack_env/spack.yaml ]]; then
   cat >&2 <<EOF
-Set DANA_SPACK_ENV to a writable, dedicated Spack environment directory.
-The shared Serafin environment may be copied first; see the README.
+Spack environment not found at $spack_env.
+Override it with DANA_SPACK_ENV only when needed.
+EOF
+  exit 1
+fi
+
+if grep -Eq '^  specs:[[:space:]]*$' "$spack_env/spack.yaml"; then
+  cat >&2 <<EOF
+$spack_env/spack.yaml contains an invalid empty 'specs:' entry.
+Change it once to:
+  specs: []
 EOF
   exit 1
 fi
