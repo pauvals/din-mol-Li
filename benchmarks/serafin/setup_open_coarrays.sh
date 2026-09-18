@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
+spack_scope=$repo/benchmarks/serafin/spack-source-scope
 
 . /etc/profile
 module purge
@@ -19,9 +20,31 @@ fi
 . "$spack_root/share/spack/setup-env.sh"
 module load gcc spack-config
 
-spack compiler find
-spack install --fail-fast opencoarrays ^openmpi
-spack load opencoarrays
+spack_env=${DANA_SPACK_ENV:-${SPACK_ENV:-}}
+if [[ -z $spack_env || ! -f $spack_env/spack.yaml ]]; then
+  cat >&2 <<EOF
+Set DANA_SPACK_ENV to a writable, dedicated Spack environment directory.
+The shared Serafin environment may be copied first; see the README.
+EOF
+  exit 1
+fi
+
+spack_cmd=(spack -C "$spack_scope" -e "$spack_env")
+spack_spec='opencoarrays%gcc@12.3.0 ^openmpi@4.1.7%gcc@12.3.0 ^ucx~backtrace_detail'
+
+"${spack_cmd[@]}" compiler find
+"${spack_cmd[@]}" add "$spack_spec"
+"${spack_cmd[@]}" concretize -f -U
+
+spec_output=$("${spack_cmd[@]}" spec -Il opencoarrays)
+printf '%s\n' "$spec_output"
+if grep -Eq '\[e\].*ucx@' <<<"$spec_output"; then
+  echo "Spack selected an external UCX despite the DANA source-only scope" >&2
+  exit 1
+fi
+
+"${spack_cmd[@]}" install --fail-fast
+"${spack_cmd[@]}" load opencoarrays
 
 command -v caf
 command -v cafrun
@@ -40,4 +63,17 @@ if ! ldd src/dana | grep -q 'libcaf_mpi'; then
   exit 1
 fi
 
-echo "Built $repo/src/dana with OpenCoarrays/MPI"
+ucx_prefix=$("${spack_cmd[@]}" location -i ucx)
+case $ucx_prefix in
+  /ccad/hpcx/*)
+    echo "DANA was built with the broken external HPC-X UCX: $ucx_prefix" >&2
+    exit 1
+    ;;
+esac
+
+if ldd src/dana | grep -q '/ccad/hpcx/'; then
+  echo "DANA still links to an HPC-X library; refusing the mixed stack" >&2
+  exit 1
+fi
+
+echo "Built $repo/src/dana with a source-built OpenCoarrays/OpenMPI/UCX stack"

@@ -1,0 +1,11 @@
+packages:
+  openmpi:
+    externals:: []
+    buildable: true
+    require::
+    - '@4.1.7 %gcc@12.3.0 +legacylaunchers ~memchecker ~cuda fabrics=ucx,cma,knem schedulers=slurm'
+  ucx:
+    externals:: []
+    buildable: true
+    require::
+    - '%gcc@12.3.0 +optimizations +thread_multiple +rc +ud +dc +cma +knem ~backtrace_detail'

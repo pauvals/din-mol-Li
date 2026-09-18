@@ -7,6 +7,8 @@
 - [x] Profile serial, coarray, and hybrid runs with equal CPU allocations.
 - [x] Reduce redundant synchronization, global apply scans, and neighbor
   rebuilds in the overlap solver.
+- [x] Provide a Serafin Spack scope that builds UCX, OpenMPI, and OpenCoarrays
+  from source and rejects the broken external HPC-X UCX metadata.
 - [x] Record repeated wall times, speedup, residual overlaps, and overlap
   rounds for the case-study poster.
 - [ ] Run and archive the one- and two-node OpenCoarrays/MPI scaling campaigns
