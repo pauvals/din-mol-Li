@@ -1555,7 +1555,8 @@ integer                  :: i
 
 call werr('Candidate policy duplicate has different candidate membership count.',a%candidate%nat/=candidate%candidate%nat)
 call werr('Candidate policy duplicate has different indexed capacity.',a%candidate%amax/=candidate%candidate%amax)
-call werr('Candidate policy duplicate has different tessellation state.',a%candidate%tessellated.neqv.candidate%candidate%tessellated)
+call werr('Candidate policy duplicate has different tessellation state.', &
+          a%candidate%tessellated.neqv.candidate%candidate%tessellated)
 
 do i=1,a%candidate%amax
   call werr('Candidate policy duplicate has different atom association state.', &
@@ -1568,10 +1569,13 @@ enddo
 if(.not.a%candidate%tessellated) return
 
 call werr('Candidate policy duplicate has different cell counts.',any(a%candidate%ncells(:)/=candidate%candidate%ncells(:)))
-call werr('Candidate policy duplicate has different cell sizes.',any(abs(a%candidate%cell(:)-candidate%candidate%cell(:))>epsilon(1._dp)))
+call werr('Candidate policy duplicate has different cell sizes.', &
+          any(abs(a%candidate%cell(:)-candidate%candidate%cell(:))>epsilon(1._dp)))
 call werr('Candidate policy duplicate has different cell head shape.',any(shape(a%candidate%head)/=shape(candidate%candidate%head)))
 call werr('Candidate policy duplicate has different cell heads.',any(a%candidate%head/=candidate%candidate%head))
-call werr('Candidate policy duplicate has different cell next arrays.',any(a%candidate%next(:a%candidate%amax)/=candidate%candidate%next(:candidate%candidate%amax)))
+call werr('Candidate policy duplicate has different cell next arrays.', &
+          any(a%candidate%next(:a%candidate%amax)/= &
+              candidate%candidate%next(:candidate%candidate%amax)))
 
 end subroutine validate_candidate_view_match
 
