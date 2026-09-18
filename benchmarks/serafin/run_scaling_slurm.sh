@@ -144,7 +144,22 @@ for config in $configs; do
     launcher_wall=$(awk -v start="$start_ns" -v end="$end_ns" 'BEGIN {printf "%.6f", (end-start)/1.e9}')
     printf '%s\n' "$launcher_wall" > "$timing"
     dana_wall=$(awk '/wall time:/ {if ($(NF-1)>max) max=$(NF-1)} END {printf "%.6f", max}' "$log")
-    residual=$(awk '/residual observations:/ {value=$NF; found=1} END {if(found) print value+0; else print -1}' "$log")
+    residual=$(awk -v images="$images" '
+      images == 1 && /numero total de choques sin solucion:/ {
+        value=$NF
+        found=1
+      }
+      images > 1 && /residual observations:/ {
+        value=$NF
+        found=1
+      }
+      END {if(found) print value+0; else print -1}
+    ' "$log")
+    if (( residual < 0 )); then
+      echo "Config $config repeat $repeat did not report the expected residual-overlap counter" >&2
+      tail -n 80 "$log" >&2
+      exit 1
+    fi
     if (( residual != 0 )); then
       echo "Config $config repeat $repeat reported residual_overlaps=$residual" >&2
       tail -n 80 "$log" >&2

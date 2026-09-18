@@ -85,7 +85,15 @@ full-resource layout uses 64 cores per node. Results are written under
 - one raw log and timing file per repeat.
 
 The launcher aborts if a layout exceeds 64 cores per node, cannot distribute
-images evenly, or reports nonzero residual overlaps.
+images evenly, omits the expected residual-overlap counter, or reports nonzero
+residual overlaps. A one-image run uses the final serial counter (`numero total
+de choques sin solucion`); multi-image runs use the global parallel counter
+(`residual observations`) produced by image 1.
+
+The `1x1` baseline reserves an exclusive node but deliberately uses only one
+core. Consequently, `jobmetrics` reports very low whole-job CPU efficiency for
+a pilot containing only that configuration. This is expected and is not the
+efficiency of a full-node layout such as `1x64` or `64x1`.
 
 Combine both jobs into a median scaling table:
 
