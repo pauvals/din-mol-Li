@@ -15,35 +15,38 @@ every image.
 From the local machine:
 
 ```sh
-scp dana-hpc-e133dc9-portable.tar.gz \
+scp dana-hpc-serafin.tar.gz \
   "$USER@serafin.ccad.unc.edu.ar:~/"
 ```
 
 On Serafin:
 
 ```sh
-tar -xzf ~/dana-hpc-e133dc9-portable.tar.gz
-cd ~/dana-hpc-e133dc9
+tar -xzf ~/dana-hpc-serafin.tar.gz
+cd ~/dana-hpc-serafin
 ```
 
-## 2. Install OpenCoarrays and build once
+## 2. Use the prebuilt Spack environment
 
-The UNC Spack guide uses `~/spack`, GCC, `spack-config`, and OpenMPI. If Spack
-is not installed yet:
+Spack and its `v2` environment are managed independently of DANA at:
 
 ```sh
-git clone --branch releases/v0.21 https://github.com/spack/spack.git ~/spack
+SPACK_ROOT=/home/shared/gmm/spackrepo/spack-0.23/spack
+DANA_SPACK_ENV=/home/shared/gmm/spackrepo/spack-0.23/serafin/v2
 ```
 
-Then run, preferably inside `tmux` or `screen`:
+The environment must already contain a consistent source-built
+OpenCoarrays/OpenMPI/UCX stack. DANA never adds, concretizes, installs, or
+changes packages in it. Build DANA against that existing environment with:
 
 ```sh
 benchmarks/serafin/setup_open_coarrays.sh
 ```
 
-This installs `opencoarrays ^openmpi`, builds DANA with `FC=caf`, and verifies
-that `src/dana` links to `libcaf_mpi`. The batch scripts reload the same Spack
-environment on the compute nodes.
+This loads OpenCoarrays from `v2`, builds DANA with `FC=caf`, and verifies that
+`src/dana` links to `libcaf_mpi`. The batch scripts only reload the same
+environment on compute nodes. `SPACK_ROOT` and `DANA_SPACK_ENV` are optional
+overrides; the Serafin paths above are their defaults.
 
 ## 3. Pilot jobs
 
