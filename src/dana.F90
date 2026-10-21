@@ -39,7 +39,8 @@ program dana
   real(dp)            :: t=0.0_dp   ! tiempo en ps
 
   ! To configure the run: positions integrator and reservoir type 
-  logical             :: integrador, s_piston=.false.,s_chunk=.false.
+  logical             :: integrador, s_piston=.false.,s_chunk=.false.,&
+                         new_sim, electrodo, ideal_dep
 
   ! Observables
   real(dp)            :: temp,rho,rho0
@@ -77,6 +78,10 @@ program dana
   call system_clock(count_max=sclock_max)
   call system_clock(sclock_t1)
                      
+  open(25,File='version')
+  write(25,*) PACKAGE_VERSION
+  close(25)
+
   ! Chemical elements used
   call elements_init()
   call set_z(1,sym='Li',mass=6.94_dp)
@@ -98,7 +103,11 @@ program dana
   eps(3,1) = eps(1,3)
   r0(1,3)  = 1.564_dp
   r0(3,1)  = r0(1,3)
-      
+ 
+  ! Para contar partículas que intentan deposic.
+  try= 0
+  depo= 0
+                      
   ! Init general del sistema de grupos
   call gindex%init()
   call ngindex%init()
@@ -112,18 +121,15 @@ program dana
   call hs%init()
   call hs%setrc(3.2_dp) ! Maximo radio de corte
 
-  ! Generar posiciones inic.
-  call pos_inic()
-
-  ! Configure integrator and reservoir for the run 
+  ! Configure integrator and reservoir for the run.
   call config_run()
 
-  open(25,File='version')
-  write(25,*) PACKAGE_VERSION
-  close(25)
+  ! Generar posiciones inic.
+  if (new_sim) call gen_pos_inic()
 
-  ! Inicializa tamaño en z de caja simulac., y lee posic. inic.
+  ! Define tamaño en z del sistema (sin contar el reservorio), y lee posic. inic.
   ! de partículas 
+  ! Read initial positions (optionally from a previous run).
   call config_inic()
 
   ! Add to GCMC
@@ -158,17 +164,9 @@ program dana
   open(15,File='try.dat')
   open(16,File='depo.dat')
 
-  ! Para contar partículas que intentan deposic.
-  try= 0
-  depo= 0
-
   call salida() ! config. inic. en el primer paso ;)
 
   call timer_start()
-
-  ! Para contar partículas que intentan deposic.
-  try= 0
-  depo= 0
 
   do i=1,nst
     ! Da un paso #wii
@@ -188,7 +186,7 @@ program dana
       call cbrownian_hs(hs,h)
 
     endif
- 
+
     ! Update neighbors
     call test_update()
  
@@ -201,27 +199,29 @@ program dana
     msd_t= msd_t/hs%ref%nat
     msd_max= max(msd_max,msd_t)
  
-    ! Para estudiar influencia deposic. en perfiles Cottrell:
-    ! la=> hs%ref%alist
-    ! do j = 1, hs%ref%nat
-    !   la=> la%next
-    !   o1=> la%o
-    !   if (o1%sym/='F') cycle
-    !   lb => la%prev
-    !   ! if(s_gcmc) call gcmc%detach(o1)
-    !   call o1%dest()
-    !   deallocate(o1)
-    !   la => lb
-    ! ! Fin chequeo
-    ! enddo
-    ! la=> hs%ref%alist
-    ! do j = 1, hs%ref%nat
-    !   la=> la%next
-    !   o1=> la%o
-    !   if (o1%sym/='F') cycle 
-    !   print *, 'error'
-    !   stop
-    ! enddo
+    ! Para estudiar desposic. ideal (Cottrell):
+    if (ideal_dep) then
+      la=> hs%ref%alist
+      do j = 1, hs%ref%nat
+        la=> la%next
+        o1=> la%o
+        if (o1%sym/='F') cycle
+        lb => la%prev
+        if(s_gcmc) call gcmc%detach(o1)
+        call o1%dest()
+        deallocate(o1)
+        la => lb
+      ! Fin chequeo
+      enddo
+      la=> hs%ref%alist
+      do j = 1, hs%ref%nat
+        la=> la%next
+        o1=> la%o
+        if (o1%sym/='F') cycle 
+        print *, 'error'
+        stop
+      enddo
+    endif
 
     ! Add new CG to the ref group
     ! NOTE: Should we allow chain reaction instead?
@@ -323,27 +323,23 @@ read(15,*) zmax
 read(15,*) dif_sc 
 read(15,*) dif_sei 
 read(15,*) nb_dcut
+read(15,*) new_sim
+read(15,*) electrodo
+read(15,*) ideal_dep
 close(15)
 end subroutine entrada
 
 
-subroutine pos_inic()
+subroutine gen_pos_inic()
 ! Create initial positions. For 1 M [Li+]
 use gems_program_types, only: distance 
-use gems_program_types, only: tbox, box_setvars  
 integer             :: n 
 real(dp),allocatable:: r(:,:) !posic.
 real(dp)            :: Mol, v1(3),v2(3),dif_pos(3), alto, dif2 ! molaridad, diferencia entre vectores posic., alto caja sim.
 real(dp),parameter  :: r0=3.2_dp, mLi= 6.94_dp
-integer             :: i,j,l,k
+integer             :: i,j,l,k,n_CG,n_Li
 logical,parameter   :: pbc(3)=[.true.,.true.,.false.]
-
-! Set the box
-tbox(:,:)= 0._dp
-tbox(1,1)= xi
-tbox(2,2)= yi
-tbox(3,3)= zmax
-call box_setvars()
+character(10)       :: sym
 
 ! Calculo nro. de partículas
 ! n= Molaridad * Volumen(A^3) * 1e-27 L/A^3 * 6.022e23 (Nro Avogadro)
@@ -351,14 +347,36 @@ call box_setvars()
 Mol = 1._dp 
 alto = zmax - o
 n = Mol * xi * yi * alto * 6.022e-4 
-allocate(r(n,3))
 
 open(12,File='pos_inic.xyz')
-write(12,*) n  ! nro. total de átomos
-write(12,*)
+
+! Leer primero las posic. inic. de CG.
+if (electrodo) then
+  open(13,File='CG_inic.xyz')
+  read(13,*) n_CG
+  read(13,*)
+
+  ! nro. total de átomos
+  allocate(r(n+n_CG,3))
+  write(12,*) n+n_CG  
+  write(12,*)
+
+  do i=1, n_CG
+    read(13,*) sym,r(i,:)
+    ! Escribo CGs existentes. Explicito que sym va a ser CG.
+    write(12,'(a,4(x,f25.12))') 'CG',r(i,1),r(i,2),r(i,3),mLi
+  enddo
+
+else
+  n_CG=0
+  ! nro. total de átomos
+  allocate(r(n,3))
+  write(12,*) n  
+  write(12,*)
+endif
 
 ! Recorro todas las particulas a crear
-do i=1,n
+do i=n_CG+1, n+n_CG
 
   ! Recorro los intentos 
   intento: do k=1,10000
@@ -392,14 +410,25 @@ write(12,'(a,4(x,f25.12))') 'Li',r(i,1),r(i,2),r(i,3),mLi
 
 enddo
 close(12)
+close(13)
 
-end subroutine pos_inic
+
+end subroutine gen_pos_inic
 
 
 subroutine config_run()
 ! Integrator and reservoir configuration 
 use gems_errors, only: werr
+use gems_program_types, only: tbox, box_setvars  
 character(100)  :: a
+
+! Set the box
+tbox(:,:)= 0._dp
+tbox(1,1)= xi
+tbox(2,2)= yi
+tbox(3,3)= zmax
+call box_setvars()
+
 open(15,File='movedor.ini') ! by Nohe :)
 read(15,*) integrador 
 
@@ -430,7 +459,7 @@ end subroutine config_run
 subroutine config_inic()
 ! configuración inicial
 integer :: i
-type(atom_dclist), pointer :: la
+!type(atom_dclist), pointer :: la
 character(10)     :: sym
 
 ! Tamaños iniciales de "reservorio"
@@ -450,6 +479,7 @@ factor2= rhomedia + cstdev
 ! 0.000577532941264052= STATS_mean
 ! 0.000107543058373559= 4*STATS_stddev
 
+
 open(11,File='pos_inic.xyz')
 read(11,*) n
 read(11,*)
@@ -460,7 +490,7 @@ do i=1,n
   allocate(pa)
   call pa%init()
 
-  read(11,'(a,3(x,f25.12))') sym,pa%pos(:)
+  read(11,*) sym,pa%pos(:)
   call pa%setsym(sym) ! Asigna algunos valores según tipo de átomo
   pa%force(:)=0._dp
   pa%pos_old(:)=pa%pos(:)
@@ -859,6 +889,7 @@ real(dp)                   :: ne, vd(3), dr
 integer                    :: i, ii, j, jj
 type(atom_dclist), pointer :: la 
 logical                    :: again
+integer, save              :: count=0
 
 again=.false.
 
@@ -903,7 +934,7 @@ do ii = 1,g%ref%nat
         ! Si queremos deposicion en cadnea sería mejor programarla
         ! para que no dependa de el orden en que se ejecuta el do.
         if (o1%pos(3)>z0) then
-           print *,'supero z0', o1%pos(3)
+           print *,'superó z0', o1%pos(3)
            stop ! raro 
         endif
       else
@@ -937,7 +968,13 @@ do ii = 1,g%ref%nat
 enddo
 
 i=choques
-if(again) call overlap_moveback(g)
+if(again) then
+  count=count+1
+  call werr('Recursion limit in HS overlap solving',count==100)
+  call overlap_moveback(g)
+else
+  count=0
+endif
 choques2=max(choques2,choques-i)
 
 end subroutine overlap_moveback
@@ -1155,7 +1192,6 @@ do j=1,sys%nat
  la=>la%next 
  pa=>la%o
  write(11,*) pa%sym,pa%pos(:),pa%z
- ! write(11,*) pa%sym,pa%pos(:),pa%gid(sys)
 
  energia= energia + pa%epot 
 enddo
@@ -1234,11 +1270,12 @@ if(o1%pos(3)<=0._dp) then
   try= try + 1
   ne=ran(idum)
 
-  if(ne<prob) then
-    depo= depo + 1
-    call o1%setz(3)   ! Es inerte en este paso de tiempo
-    depos= .true.
-
+  if (electrodo.eqv..false.) then
+    if(ne<prob) then
+      depo= depo + 1
+      call o1%setz(3)   ! Es inerte en este paso de tiempo
+      depos= .true.
+    endif
   endif
 
   ! XXX: atomos depositados también rebotan. Sería + consistente

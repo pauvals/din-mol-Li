@@ -26,6 +26,9 @@ There are three possible reservoir types to study, and two positions integrators
     cd tests
     ./test.sh
 
+To run a simulation one needs `dana`, `entrada.ini` and `movedor.ini`
+in the same folder.
+
 <!---
 Agregar sobre:
 Contacto
