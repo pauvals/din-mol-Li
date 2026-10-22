@@ -178,9 +178,6 @@ program dana
       ! Para trabajar con din. Langevin
       call ermak_a(hs,ranv)
       ! FIXME: sync_execution_views must be always before force calculation
-      ! TODO: ver de sacar ya knock
-      ! Ve si congela o rebota
-      ! call knock(hs)
       call fuerza(hs,eps,r0)
       call ermak_b(hs,ranv)
 
@@ -1062,7 +1059,6 @@ do i = 1,g%focus%nat
   ! Para no calcular choques o deposic. sobre Li
   ! si depositó sobre electrodo
   if (depos) cycle
-  ! probar, luego ver sino si usar knock
  
   ! Mark atom to check for colisions
   o1%skip=.false. 
@@ -1291,95 +1287,6 @@ if(o1%pos(3)<=0._dp) then
 
 endif
 end subroutine atom_pbc
-
-
-subroutine knock(list) 
-! Deposic. sobre Li ya depositado, sino, rebote brusco
-use gems_program_types, only: box
-type(ngroup)              :: list
-real(dp)                  :: ne,vd(3),dr
-integer                   :: i,ii,j,jj,l 
-type(atom),pointer        :: o1,o2
-type(atom_dclist),pointer :: la
- 
-! Por todos los pares de particulas
-
-la => list%focus%alist
-do ii = 1,list%focus%nat
-  la => la%next
-  o1 => la%o ! o1 es el único que puede ser CG
-
-  i = o1%gid(list)
-  ! tp = o1%gid(sys)
-
-  do jj = 1, list%nn(i)  ! sobre los vecinos
-
-    j = list%list(i,jj)
-    o2 => list%a(j)%o
-
-    vd(:) = o1%pos(:)-o2%pos(:)
-
-    !Condicion de imagen minima
-    do l=1,2       !Sin contar en z ;)
-       if (vd(l)>box(l)*.5_dp) then
-         vd(l)=vd(l)-box(l)
-       else if (vd(l)<-box(l)*.5_dp) then
-         vd(l)=vd(l)+box(l)
-       endif
-    enddo
-
-    dr = dot_product(vd,vd)
-
-    if(dr>list%rcut2) cycle !Sí es necesario :B
-
-    ne=ran(idum) ! nro aleatorio para decidir si congelar o no.
-    if(ne<prob) then
-       call o2%setz(3)
-
-       ! Terminac. brusca del programa si la dendrita toca el z0
-       if (o2%pos(3)>z0) stop 
-       exit
-
-    else
-
-      ! FIXME
-      ! Retorno la partícula a la solución-esto es una falla u.u
-      ! Podrían superponerse partícs. al retroceder...
-      ! Igual que Mayers
-      o2%pos(:)= o2%old_cg(:) 
-
-    endif
-
-  enddo
-
-enddo
-
-
-! Add new CG to the ref group
-la=> list%candidate%alist
-do i = 1, list%candidate%nat
-  la=> la%next
-  o1=> la%o
-  if (o1%sym/='F') cycle
-  call o1%setz(2)
-  call list%focus%attach(o1)
-  call list%attach(o1)
-enddo
-
-! ESTO ES DE LA RUTINA VIEJA - REVISAR POR LAS DUDAS ANTES DE TIRAR
-
-! Lo que sigue iba por si la posic. vieja del Li+ comparada con la del CG es gde.,
-! pasa a decidir si congela.
-! Si están "cerca" es probable que en un paso de sim.
-! anterior ya haya intentado depositar, y no vuelve a probar
-! if(m==1) then
-!    vd(:)=o2%pos_old(:)-o1%pos(:)  
-! else
-!    vd(:)=o1%pos_old(:)-o2%pos(:)  
-! endif
-
-! vd(:)=a(lit)%pos_old(:)-a(cng)%pos(:)  
-end subroutine knock
 
  
 subroutine kion(g,temp)
